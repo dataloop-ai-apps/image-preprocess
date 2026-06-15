@@ -4,7 +4,7 @@ from PIL.ExifTags import Base, GPS, IFD
 from PIL.TiffImagePlugin import IFDRational
 from io import BytesIO
 
-from modules.exif_extractor import extract_exif, extract_gps
+from exif_extractor import extract_exif, extract_gps
 
 
 def create_test_image_with_exif(width, height, exif_tags=None, gps_tags=None):

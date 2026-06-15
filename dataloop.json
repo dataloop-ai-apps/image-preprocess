@@ -11,7 +11,7 @@
         "modules": [
             {
                 "name": "default_module",
-                "entryPoint": "main.py",
+                "entryPoint": "img-preprocess/main.py",
                 "className": "ServiceRunner",
                 "initInputs": [],
                 "functions": [

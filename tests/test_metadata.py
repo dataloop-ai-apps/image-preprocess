@@ -1,6 +1,6 @@
 import pytest
 
-from modules.metadata import build_metadata
+from metadata import build_metadata
 
 
 def test_full_data():

@@ -2,7 +2,7 @@ import pytest
 from PIL import Image, ExifTags
 from io import BytesIO
 
-from modules.thumbnail import auto_rotate, generate_thumbnail
+from thumbnail import auto_rotate, generate_thumbnail
 
 
 def create_test_image(width, height, mode="RGB", orientation=None):

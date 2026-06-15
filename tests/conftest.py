@@ -1,9 +1,14 @@
+import os
+import sys
 import pytest
 from io import BytesIO
 from unittest.mock import MagicMock
 from PIL import Image
 from PIL.ExifTags import Base, GPS, IFD
 from PIL.TiffImagePlugin import IFDRational
+
+# Add img-preprocess dir to sys.path so tests can import the source modules
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'img-preprocess'))
 
 
 def create_test_image(width, height, mode="RGB", exif=None, gps=None):
