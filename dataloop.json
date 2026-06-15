@@ -1,0 +1,86 @@
+{
+    "name": "image-preprocess-husam",
+    "displayName": "Image Preprocess Husam",
+    "description": "Image Preprocess Application",
+    "attributes": {
+        "Provider": "Dataloop"
+    },
+    "version": "3.0.0",
+    "scope": "system",
+    "components": {
+        "modules": [
+            {
+                "name": "default_module",
+                "entryPoint": "main.py",
+                "className": "ServiceRunner",
+                "initInputs": [],
+                "functions": [
+                    {
+                        "name": "on_create",
+                        "description": "run image preprocess - metadata extraction and thumbnail creation",
+                        "input": [
+                            {
+                                "name": "item",
+                                "type": "Item"
+                            }
+                        ],
+                        "output": []
+                    },
+                    {
+                        "name": "test",
+                        "input": [],
+                        "output": [],
+                        "description": "test the package"
+                    }
+                ]
+            }
+        ],
+        "services": [
+            {
+                "name": "image-preprocess-husam",
+                "moduleName": "default_module",
+                "podType": "regular-s",
+                "runtime": {
+                    "runnerImage": "gcr.io/viewo-g/piper/agent/cpu/image-preprocess:6",
+                    "concurrency": 2,
+                    "autoscaler": {
+                        "type": "rabbitmq",
+                        "minReplicas": 1,
+                        "maxReplicas": 100,
+                        "queueLength": 20
+                    }
+                },
+                "executionTimeout": 3600,
+                "drainTime": 600,
+                "onReset": "failed"
+            }
+        ],
+        "triggers": [
+            {
+                "name": "image-preprocess",
+                "type": "event",
+                "template": true,
+                "activation": {
+                    "autoClone": true,
+                    "cloneActiveDefault": true,
+                    "overridable": false
+                },
+                "applyOnExistingProjects": true,
+                "activateOnExistingProjects": false,
+                "spec": {
+                    "resource": "item",
+                    "actions": ["Created", "Clone"],
+                    "filter": {},
+                    "operation": {
+                        "type": "function",
+                        "functionName": "on_create",
+                        "serviceName": "image-preprocess-husam"
+                    },
+                    "input": {
+                        "mode": "full"
+                    }
+                }
+            }
+        ]
+    }
+}
