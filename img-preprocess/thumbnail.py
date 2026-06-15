@@ -3,7 +3,7 @@ from io import BytesIO
 
 from PIL import Image, ImageOps
 
-from etl_errors import record_etl_error
+from common.etl_errors import record_etl_error
 
 logger = logging.getLogger("image-preprocess")
 

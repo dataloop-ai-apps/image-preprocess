@@ -1,14 +1,22 @@
 import traceback
 import os
+import sys
 import datetime
 import logging
 import math
 from io import BytesIO
 
+# Ensure repo root is importable so we can pull in the shared ``common`` package.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
 import numpy as np
 import rasterio
 import dtlpy as dl
 from PIL import Image
+
+from common.etl_errors import record_etl_error
 
 logger = logging.getLogger("tiff-preprocess")
 
@@ -71,6 +79,9 @@ class ServiceRunner(dl.BaseServiceRunner):
         self.tiff_meta: dict = {}
         self.shape: tuple | None = None
         self.dims: dict | None = None
+        self.mode: str = DEFAULT_MODE
+        self.max_file_size_mb: int = MAX_FILE_SIZE_MB
+        self.default_thumb_size: int = DEFAULT_THUMB_SIZE
         logger.info(
             'ServiceRunner initialized: thumb_size=%d, mode=%s, max_file_size_mb=%d',
             DEFAULT_THUMB_SIZE, DEFAULT_MODE, MAX_FILE_SIZE_MB,
@@ -87,13 +98,23 @@ class ServiceRunner(dl.BaseServiceRunner):
     # Entry point
     # ------------------------------------------------------------------
 
-    def run(self, item: dl.Item, progress: dl.Progress | None = None) -> None:
+    def run(self, item: dl.Item, context=None, progress: dl.Progress | None = None) -> None:
         if self._should_skip(item):
             return
 
-        mode = DEFAULT_MODE
-        do_metadata = mode in ('full', 'metadata-only')
-        do_thumbnail = mode in ('full', 'thumbnail-only')
+        # Resolve config from trigger input, fallback to env defaults
+        trigger_input = {}
+        if context is not None and hasattr(context, 'trigger_input'):
+            trigger_input = context.trigger_input or {}
+
+        self.mode = str(trigger_input.get('mode', DEFAULT_MODE)).lower()
+        self.max_file_size_mb = int(trigger_input.get('max_file_size_mb', MAX_FILE_SIZE_MB))
+        self.default_thumb_size = int(trigger_input.get('default_thumb_size', DEFAULT_THUMB_SIZE))
+        logger.info('Processing config: mode=%s max_file_size_mb=%d default_thumb_size=%d',
+                    self.mode, self.max_file_size_mb, self.default_thumb_size)
+
+        do_metadata = self.mode in ('full', 'metadata-only')
+        do_thumbnail = self.mode in ('full', 'thumbnail-only')
 
         # Ensure the etl error sink exists; all helpers route through _record_etl_error.
         item.metadata.setdefault('system', {}).setdefault('etl', {}).setdefault('errors', [])
@@ -109,8 +130,8 @@ class ServiceRunner(dl.BaseServiceRunner):
         try:
             # File size guard (uses platform-reported size to avoid downloading huge files).
             file_size = item.metadata.get('system', {}).get('size', 0) or 0
-            if file_size and file_size > MAX_FILE_SIZE_MB * 1024 * 1024:
-                msg = 'File too large: {} bytes exceeds {}MB limit'.format(file_size, MAX_FILE_SIZE_MB)
+            if file_size and file_size > self.max_file_size_mb * 1024 * 1024:
+                msg = 'File too large: {} bytes exceeds {}MB limit'.format(file_size, self.max_file_size_mb)
                 logger.error(msg)
                 self._record_etl_error(item, 'size_check', msg, failed=True)
                 return
@@ -137,7 +158,7 @@ class ServiceRunner(dl.BaseServiceRunner):
             self._apply_image_etl_metadata(item, exif_payload, etl_failed=False)
             logger.info(
                 'TIFF conversion complete: item=%s errors=%d mode=%s',
-                item.id, len(item.metadata['system']['etl']['errors']), mode,
+                item.id, len(item.metadata['system']['etl']['errors']), self.mode,
             )
 
         except Exception as e:
@@ -286,24 +307,8 @@ class ServiceRunner(dl.BaseServiceRunner):
     @staticmethod
     def _record_etl_error(item, stage: str, error: str, failed: bool = False,
                           **extra) -> list:
-        """Append an error to system.etl.errors and optionally set the failed flag.
-
-        Extra keyword args are merged into the error dict (e.g. ``traceback=...``).
-        Returns the etl_errors list so callers can keep using the same reference.
-        """
-        system = item.metadata.setdefault('system', {})
-        etl = system.setdefault('etl', {})
-        etl_errors = etl.setdefault('errors', [])
-        entry = {'stage': stage, 'error': error}
-        entry.update(extra)
-        etl_errors.append(entry)
-        if failed:
-            etl['failed'] = True
-            system.setdefault('imageEtl', {})['etl'] = {
-                'failed': True,
-                'errors': etl_errors,
-            }
-        return etl_errors
+        """Thin wrapper around ``common.etl_errors.record_etl_error``."""
+        return record_etl_error(item, stage, error, failed=failed, **extra)
 
     # ------------------------------------------------------------------
     # Skip logic
@@ -699,13 +704,12 @@ class ServiceRunner(dl.BaseServiceRunner):
             logger.exception('Thumbnail generation failed for item=%s', item.id)
             self._record_etl_error(item, 'thumbnail', 'Thumbnail generation failed')
 
-    @staticmethod
-    def _make_thumbnail_buffer(pil_image: Image.Image) -> BytesIO:
+    def _make_thumbnail_buffer(self, pil_image: Image.Image) -> BytesIO:
         """Resize ``pil_image`` in place and return a PNG-encoded BytesIO buffer."""
         thumb = pil_image
         if thumb.mode != 'RGBA':
             thumb = thumb.convert('RGBA')
-        thumb.thumbnail(size=(DEFAULT_THUMB_SIZE, DEFAULT_THUMB_SIZE))
+        thumb.thumbnail(size=(self.default_thumb_size, self.default_thumb_size))
         buf = BytesIO()
         thumb.save(buf, format='PNG')
         buf.seek(0)

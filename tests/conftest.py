@@ -7,8 +7,11 @@ from PIL import Image
 from PIL.ExifTags import Base, GPS, IFD
 from PIL.TiffImagePlugin import IFDRational
 
-# Add img-preprocess dir to sys.path so tests can import the source modules
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'img-preprocess'))
+# Add repo root (for the shared ``common`` package) and img-preprocess dir
+# (for the service-local modules) to sys.path so tests can import them.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+sys.path.insert(0, _REPO_ROOT)
+sys.path.insert(0, os.path.join(_REPO_ROOT, 'img-preprocess'))
 
 
 def create_test_image(width, height, mode="RGB", exif=None, gps=None):

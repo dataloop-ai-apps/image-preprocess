@@ -1,11 +1,17 @@
 import logging
 import os
+import sys
 from io import BytesIO
+
+# Ensure repo root is importable so we can pull in the shared ``common`` package.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
 import dtlpy as dl
 from PIL import Image
 
-from etl_errors import record_etl_error
+from common.etl_errors import record_etl_error
 from metadata_extractor import extract_exif, set_image_dimensions
 from thumbnail import create_and_upload_thumbnail
 

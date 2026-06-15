@@ -4,7 +4,7 @@ from typing import Dict, Any
 from PIL import Image
 from PIL.ExifTags import Base, GPS, IFD
 
-from etl_errors import record_etl_error
+from common.etl_errors import record_etl_error
 
 logger = logging.getLogger("image-preprocess")
 

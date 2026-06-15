@@ -1,6 +1,6 @@
 {
-    "name": "image-preprocess-husam",
-    "displayName": "Image Preprocess Husam",
+    "name": "image-preprocess",
+    "displayName": "Image Preprocess",
     "description": "Image Preprocess Application",
     "attributes": {
         "Provider": "Dataloop"
@@ -33,11 +33,48 @@
                         "description": "test the package"
                     }
                 ]
+            },
+            {
+                "name": "tiff_module",
+                "entryPoint": "tiff-preprocess/main.py",
+                "className": "ServiceRunner",
+                "initInputs": [],
+                "functions": [
+                    {
+                        "name": "run",
+                        "description": "convert tiff to png",
+                        "input": [
+                            {
+                                "name": "item",
+                                "type": "Item"
+                            },
+                            {
+                                "name": "mode",
+                                "type": "String"
+                            },
+                            {
+                                "name": "max_file_size_mb",
+                                "type": "Number"
+                            },
+                            {
+                                "name": "default_thumb_size",
+                                "type": "Number"
+                            }
+                        ],
+                        "output": []
+                    },
+                    {
+                        "name": "test",
+                        "input": [],
+                        "output": [],
+                        "description": "convert tiff test"
+                    }
+                ]
             }
         ],
         "services": [
             {
-                "name": "image-preprocess-husam",
+                "name": "image-preprocess",
                 "moduleName": "default_module",
                 "podType": "regular-s",
                 "runtime": {
@@ -53,6 +90,25 @@
                 "executionTimeout": 3600,
                 "drainTime": 600,
                 "onReset": "failed"
+            },
+            {
+                "name": "tiff-converter",
+                "moduleName": "tiff_module",
+                "podType": "regular-m",
+                "runtime": {
+                    "runnerImage": "gcr.io/viewo-g/piper/agent/runner/apps/tiff-converter:0.0.1",
+                    "concurrency": 10,
+                    "autoscaler": {
+                        "type": "rabbitmq",
+                        "minReplicas": 0,
+                        "maxReplicas": 19,
+                        "queueLength": 30
+                    },
+                    "preemptible": true
+                },
+                "executionTimeout": 3600,
+                "drainTime": 600,
+                "onReset": "rerun"
             }
         ],
         "triggers": [
@@ -74,12 +130,43 @@
                     "operation": {
                         "type": "function",
                         "functionName": "on_create",
-                        "serviceName": "image-preprocess-husam"
+                        "serviceName": "image-preprocess"
                     },
                     "input": {
                         "mode": "full",
                         "max_file_size_mb": 100,
                         "default_thumb_size": 128
+                    }
+                }
+            },
+            {
+                "name": "tiff-converter",
+                "active": true,
+                "type": "Event",
+                "scope": "project",
+                "namespace": "services.tiff-converter",
+                "spec": {
+                    "filter": {
+                        "metadata": {
+                            "system": {
+                                "mimetype": "image/tiff"
+                            }
+                        }
+                    },
+                    "executionMode": "Once",
+                    "resource": "Item",
+                    "actions": [
+                        "Created"
+                    ],
+                    "input": {
+                        "mode": "full",
+                        "max_file_size_mb": 2000,
+                        "default_thumb_size": 128
+                    },
+                    "operation": {
+                        "type": "function",
+                        "functionName": "run",
+                        "serviceName": "tiff-converter"
                     }
                 }
             }
