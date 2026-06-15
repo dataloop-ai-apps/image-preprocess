@@ -15,13 +15,12 @@ logger = logging.getLogger(__name__)
 ENABLE_IMAGE_PREPROCESS = os.getenv("ENABLE_IMAGE_PREPROCESS", "true").lower() == "true"
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "100"))
 DEFAULT_THUMB_SIZE = int(os.getenv("DEFAULT_THUMB_SIZE", "128"))
-MAX_IMAGE_PIXELS = int(os.getenv("MAX_IMAGE_PIXELS", "400000000"))
 DEFAULT_MODE = os.getenv("DEFAULT_MODE", "full")
 
 
 class ServiceRunner(dl.BaseServiceRunner):
     def __init__(self, **kwargs):
-        Image.MAX_IMAGE_PIXELS = MAX_IMAGE_PIXELS
+        pass
 
     def on_create(self, item: dl.Item, context=None, progress=None):
         """Process an image item: extract metadata and generate thumbnail.
@@ -30,12 +29,14 @@ class ServiceRunner(dl.BaseServiceRunner):
             mode – "full" | "metadata-only" | "thumbnail-only" (default: "full")
         """
         
-        # Resolve processing mode from trigger input
+        # Resolve processing config from trigger input, fallback to env vars
         trigger_input = {}
         if context is not None and hasattr(context, 'trigger_input'):
             trigger_input = context.trigger_input or {}
         
         mode = trigger_input.get('mode', DEFAULT_MODE)
+        max_file_size_mb = int(trigger_input.get('max_file_size_mb', MAX_FILE_SIZE_MB))
+        default_thumb_size = int(trigger_input.get('default_thumb_size', DEFAULT_THUMB_SIZE))
         logger.info(f"Processing mode: {mode}")
         
         # Step 1: ENABLE_IMAGE_PREPROCESS check
@@ -56,8 +57,8 @@ class ServiceRunner(dl.BaseServiceRunner):
         
         # Step 3: File size guard
         file_size = item.metadata.get("system", {}).get("size", 0)
-        if file_size > MAX_FILE_SIZE_MB * 1024 * 1024:
-            logger.warning(f"File too large: {file_size} bytes > {MAX_FILE_SIZE_MB}MB")
+        if file_size > max_file_size_mb * 1024 * 1024:
+            logger.warning(f"File too large: {file_size} bytes > {max_file_size_mb}MB")
             return item
         
         # Step 4: Download to BytesIO
@@ -109,7 +110,7 @@ class ServiceRunner(dl.BaseServiceRunner):
         if mode in ('full', 'thumbnail-only'):
             try:
                 rotated = auto_rotate(img)
-                thumb_buf = generate_thumbnail(rotated, DEFAULT_THUMB_SIZE)
+                thumb_buf = generate_thumbnail(rotated, default_thumb_size)
                 dataset = dl.datasets.get(dataset_id=item.datasetId, fetch=False)
                 thumbnail_item = dataset.items.upload(
                     local_path=thumb_buf,

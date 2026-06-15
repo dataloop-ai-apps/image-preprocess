@@ -77,7 +77,9 @@
                         "serviceName": "image-preprocess-husam"
                     },
                     "input": {
-                        "mode": "full"
+                        "mode": "full",
+                        "max_file_size_mb": 100,
+                        "default_thumb_size": 128
                     }
                 }
             }
