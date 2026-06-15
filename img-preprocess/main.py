@@ -5,13 +5,11 @@ from io import BytesIO
 import dtlpy as dl
 from PIL import Image
 
-from exif_extractor import extract_exif, extract_gps
-from thumbnail import auto_rotate, generate_thumbnail
-from metadata import build_metadata
+from metadata_extractor import extract_exif, extract_gps, set_image_dimensions
+from thumbnail import create_and_upload_thumbnail
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("image-preprocess")
 
-# Configuration (§5.6)
 ENABLE_IMAGE_PREPROCESS = os.getenv("ENABLE_IMAGE_PREPROCESS", "true").lower() == "true"
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "100"))
 DEFAULT_THUMB_SIZE = int(os.getenv("DEFAULT_THUMB_SIZE", "128"))
@@ -25,11 +23,11 @@ class ServiceRunner(dl.BaseServiceRunner):
     def on_create(self, item: dl.Item, context=None, progress=None):
         """Process an image item: extract metadata and generate thumbnail.
         
-        The trigger's spec.input (via context.trigger_input) controls processing mode:
+        Processing mode is controlled via context.trigger_input:
             mode – "full" | "metadata-only" | "thumbnail-only" (default: "full")
         """
         
-        # Resolve processing config from trigger input, fallback to env vars
+        # Resolve config from trigger input, fallback to env defaults
         trigger_input = {}
         if context is not None and hasattr(context, 'trigger_input'):
             trigger_input = context.trigger_input or {}
@@ -39,7 +37,6 @@ class ServiceRunner(dl.BaseServiceRunner):
         default_thumb_size = int(trigger_input.get('default_thumb_size', DEFAULT_THUMB_SIZE))
         logger.info(f"Processing mode: {mode}")
         
-        # Step 1: ENABLE_IMAGE_PREPROCESS check
         if not ENABLE_IMAGE_PREPROCESS:
             logger.info("Image preprocessing disabled via ENABLE_IMAGE_PREPROCESS")
             return item
@@ -47,7 +44,7 @@ class ServiceRunner(dl.BaseServiceRunner):
         # Clear stale ETL from previous runs
         item.metadata.setdefault("system", {}).pop("etl", None)
 
-        # Step 2: MIME guard
+        # Reject non-image items
         mimetype = item.metadata.get("system", {}).get("mimetype", "")
         if not mimetype.startswith("image/"):
             logger.info(f"Skipping non-image item: {mimetype}")
@@ -55,28 +52,36 @@ class ServiceRunner(dl.BaseServiceRunner):
             item = item.update(system_metadata=True)
             return item
         
-        # Step 3: File size guard
+        # Reject files exceeding size limit
         file_size = item.metadata.get("system", {}).get("size", 0)
         if file_size > max_file_size_mb * 1024 * 1024:
-            logger.warning(f"File too large: {file_size} bytes > {max_file_size_mb}MB")
+            logger.error(f"File too large: {file_size} bytes > {max_file_size_mb}MB")
+            item.metadata["system"]["etl"] = {
+                "failed": True,
+                "errors": [f"File too large: {file_size} bytes exceeds {max_file_size_mb}MB limit"],
+            }
+            item = item.update(system_metadata=True)
             return item
         
-        # Step 4: Download to BytesIO
+        # Download item binary content
         try:
             buffer = item.download(save_locally=False)
             if not isinstance(buffer, BytesIO):
                 buffer = BytesIO(buffer)
         except Exception as e:
             logger.exception(f"Failed to download item {item.id}")
-            raise
+            item.metadata["system"]["etl"] = {
+                "failed": True,
+                "errors": [f"Download failed: {e}"],
+            }
+            item = item.update(system_metadata=True)
+            return item
         
-        # Step 5-6: Open with Pillow and extract dimensions
+        # Open image and write dimensions to metadata
         try:
             buffer.seek(0)
             img = Image.open(buffer)
             img.load()
-            width, height = img.size
-            channels = len(img.getbands())
         except Exception as e:
             logger.exception(f"Failed to open/read image for item {item.id}")
             item.metadata["system"]["etl"] = {
@@ -87,55 +92,25 @@ class ServiceRunner(dl.BaseServiceRunner):
             buffer.close()
             return item
         
-        # ETL info accumulator
-        etl_info = {}
+        set_image_dimensions(item, img)
 
-        # Step 7: Metadata extraction (non-fatal block)
-        exif_data = None
-        gps_data = None
-        
+        # Extract EXIF and GPS, each writes directly to item.metadata
         if mode in ('full', 'metadata-only'):
             try:
-                exif_data = extract_exif(img)
-                gps_data = extract_gps(img)
+                extract_exif(img, item)
+                extract_gps(img, item)
             except Exception as e:
                 logger.exception(f"Failed to extract EXIF for item {item.id}")
-                etl_info.setdefault("errors", []).append(f"Exif extraction failed: {e}")
-                exif_data = None
-                gps_data = None
+                item.metadata["system"].setdefault("etl", {}).setdefault("errors", []).append(f"Exif extraction failed: {e}")
         
-        # Step 8-9: Thumbnail (non-fatal block)
-        thumbnail_id = None
-        
+        # WARNING: thumbnail generation mutates img (resize in-place).
+        # This MUST remain the last step that uses img.
         if mode in ('full', 'thumbnail-only'):
             try:
-                rotated = auto_rotate(img)
-                thumb_buf = generate_thumbnail(rotated, default_thumb_size)
-                dataset = dl.datasets.get(dataset_id=item.datasetId, fetch=False)
-                thumbnail_item = dataset.items.upload(
-                    local_path=thumb_buf,
-                    remote_path="/.dataloop/thumbnails",
-                    remote_name=f"{item.id}.png",
-                    overwrite=True,
-                    item_metadata={"system": {"originItemId": item.id}}
-                )
-                thumbnail_id = thumbnail_item.id
+                create_and_upload_thumbnail(img, item, default_thumb_size)
             except Exception as e:
                 logger.exception(f"Failed to generate thumbnail for item {item.id}")
-                etl_info.setdefault("errors", []).append(f"Thumbnail generation failed: {e}")
+                item.metadata["system"].setdefault("etl", {}).setdefault("errors", []).append(f"Thumbnail generation failed: {e}")
         
-        # Step 10: Build metadata
-        meta = build_metadata(width, height, channels, thumbnail_id, exif_data, gps_data)
-        
-        # Step 11-12: Write metadata
-        item.metadata.setdefault("system", {}).update(meta["system"])
-        if "user" in meta:
-            item.metadata.setdefault("user", {}).update(meta["user"])
-        
-        # Write ETL info only if there were issues
-        if etl_info:
-            item.metadata["system"]["etl"] = etl_info
-        
-        # Step 13: Update item
         item = item.update(system_metadata=True)
         return item

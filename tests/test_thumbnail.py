@@ -5,6 +5,13 @@ from io import BytesIO
 from thumbnail import auto_rotate, generate_thumbnail
 
 
+def _make_item():
+    class MockItem:
+        def __init__(self):
+            self.metadata = {"system": {}, "user": {}}
+    return MockItem()
+
+
 def create_test_image(width, height, mode="RGB", orientation=None):
     """Helper to create test image with optional orientation."""
     img = Image.new(mode, (width, height))
@@ -85,17 +92,20 @@ def test_rgba_to_rgb():
 def test_auto_rotate_orientation_6():
     """Test 7: Auto-rotate orientation=6"""
     img = create_test_image(800, 600, orientation=6)
-    rotated = auto_rotate(img)
+    item = _make_item()
+    rotated = auto_rotate(img, item)
     
     # Orientation 6 means 90° CW rotation
     # Original 800x600 should become 600x800
     assert rotated.size == (600, 800)
+    assert "etl" not in item.metadata["system"]
 
 
 def test_auto_rotate_orientation_1():
     """Test 8: Auto-rotate orientation=1"""
     img = create_test_image(800, 600, orientation=1)
-    rotated = auto_rotate(img)
+    item = _make_item()
+    rotated = auto_rotate(img, item)
     
     # Orientation 1 means no rotation
     assert rotated.size == (800, 600)
@@ -104,7 +114,8 @@ def test_auto_rotate_orientation_1():
 def test_auto_rotate_no_exif():
     """Test 9: Auto-rotate no EXIF"""
     img = create_test_image(800, 600)
-    rotated = auto_rotate(img)
+    item = _make_item()
+    rotated = auto_rotate(img, item)
     
     # No EXIF should return unchanged copy
     assert rotated.size == (800, 600)
@@ -127,13 +138,11 @@ def test_output_buffer_seeked_to_0():
     assert result.tell() == 0
 
 
-def test_input_not_mutated():
-    """Test 12: Input not mutated"""
-    img = create_test_image(400, 300)
-    original_size = img.size
-    original_mode = img.mode
+def test_input_mutated_in_place():
+    """Test 12: generate_thumbnail mutates the input image (resize in-place)"""
+    img = create_test_image(1024, 768)
     
-    generate_thumbnail(img, max_edge=512)
+    generate_thumbnail(img, max_edge=256)
     
-    assert img.size == original_size
-    assert img.mode == original_mode
+    # thumbnail() resizes in-place — original img is now resized
+    assert max(img.size) <= 256

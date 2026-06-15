@@ -3,12 +3,13 @@ from io import BytesIO
 
 from PIL import Image, ImageOps
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("image-preprocess")
 
 
-def auto_rotate(img: Image.Image) -> Image.Image:
+def auto_rotate(img: Image.Image, item) -> Image.Image:
     """Apply EXIF orientation and return a new correctly-oriented image.
-    If no orientation tag or error, returns the image unchanged (copy).
+    If no orientation tag or error, returns the image unchanged (copy)
+    and appends a non-fatal ETL error to item.metadata.
     """
     try:
         rotated = ImageOps.exif_transpose(img)
@@ -16,9 +17,9 @@ def auto_rotate(img: Image.Image) -> Image.Image:
             return rotated
     except Exception as e:
         logger.warning(f"Failed to auto-rotate image: {e}")
+        item.metadata["system"].setdefault("etl", {}).setdefault("errors", []).append(f"Auto-rotate failed: {e}")
     
-    # Return a copy to avoid mutating input
-    return img.copy()
+    return img
 
 
 def generate_thumbnail(img: Image.Image, max_edge: int = 512) -> BytesIO:
@@ -28,14 +29,18 @@ def generate_thumbnail(img: Image.Image, max_edge: int = 512) -> BytesIO:
     Does NOT upscale — if image is smaller than max_edge, keeps original size.
     Converts to RGB if necessary (handles RGBA, P, L, LA, CMYK).
     Returns a BytesIO buffer containing PNG data, seeked to 0.
+    
+    WARNING: This function may mutate the input image (e.g. resize in-place).
+    Callers must treat img as consumed after this call.
     """
-    # Handle animated images - only process first frame
+    # Animated images (e.g. GIF): seek to frame 0 and copy to extract a
+    # single static frame. Without copy, thumbnail() operates on the full
+    # multi-frame object which can produce errors or unexpected results.
     if getattr(img, "is_animated", False):
         img.seek(0)
         img = img.copy()
     
-    # Work on a copy to avoid mutating input
-    thumb = img.copy()
+    thumb = img
     
     # Resize using thumbnail (never upscales, preserves aspect ratio)
     thumb.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
@@ -73,3 +78,21 @@ def generate_thumbnail(img: Image.Image, max_edge: int = 512) -> BytesIO:
     buf.seek(0)
     
     return buf
+
+
+def create_and_upload_thumbnail(img: Image.Image, item, max_edge: int = 512):
+    """Auto-rotate, generate thumbnail, upload to dataset, and set thumbnailId on item.
+
+    Combines rotation correction, thumbnail generation, and upload into a single call.
+    Sets item.metadata["system"]["thumbnailId"] but does NOT call item.update().
+    """
+    rotated = auto_rotate(img, item)
+    thumb_buf = generate_thumbnail(rotated, max_edge)
+    thumbnail_item = item.dataset.items.upload(
+        local_path=thumb_buf,
+        remote_path="/.dataloop/thumbnails",
+        remote_name=f"{item.id}.png",
+        overwrite=True,
+        item_metadata={"system": {"originItemId": item.id}}
+    )
+    item.metadata.setdefault("system", {})["thumbnailId"] = thumbnail_item.id

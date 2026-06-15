@@ -1,10 +1,9 @@
-import pytest
 from PIL import Image
 from PIL.ExifTags import Base, GPS, IFD
 from PIL.TiffImagePlugin import IFDRational
 from io import BytesIO
 
-from exif_extractor import extract_exif, extract_gps
+from metadata_extractor import extract_exif, extract_gps
 
 
 def create_test_image_with_exif(width, height, exif_tags=None, gps_tags=None):
@@ -23,6 +22,14 @@ def create_test_image_with_exif(width, height, exif_tags=None, gps_tags=None):
     img.save(buf, format="JPEG", exif=exif_obj.tobytes())
     buf.seek(0)
     return buf
+
+
+def _make_item():
+    """Create a minimal mock item with metadata dict."""
+    class MockItem:
+        def __init__(self):
+            self.metadata = {"system": {}, "user": {}}
+    return MockItem()
 
 
 def test_full_exif_extraction():
@@ -58,46 +65,49 @@ def test_full_exif_extraction():
     buf.seek(0)
     
     img = Image.open(buf)
-    result = extract_exif(img)
+    item = _make_item()
+    extract_exif(img, item)
     
-    assert result is not None
-    assert result["orientation"] == 1
-    assert result["camera_make"] == "Apple"
-    assert result["camera_model"] == "iPhone 15 Pro"
-    assert result["date_time"] == "2024:01:15 10:30:45"
-    assert result["iso"] == 100
-    assert result["aperture"] == 1.8  # 9/5 = 1.8
-    assert result["exposure_time"] == "1/120"
-    assert result["focal_length"] == 6.765
-    assert result["focal_length_35mm"] == 24
-    assert result["lens_model"] == "iPhone 15 Pro back camera 6.765mm f/1.78"
-    assert result["flash"] is False
-    assert result["white_balance"] == 0
+    exif = item.metadata["system"]["exif"]
+    assert exif["orientation"] == 1
+    assert exif["cameraMake"] == "Apple"
+    assert exif["cameraModel"] == "iPhone 15 Pro"
+    assert exif["dateTime"] == "2024:01:15 10:30:45"
+    assert exif["iso"] == 100
+    assert exif["aperture"] == 1.8
+    assert exif["exposureTime"] == "1/120"
+    assert exif["focalLength"] == 6.765
+    assert exif["focalLength35mm"] == 24
+    assert exif["lensModel"] == "iPhone 15 Pro back camera 6.765mm f/1.78"
+    assert exif["flash"] is False
+    assert exif["whiteBalance"] == 0
 
 
 def test_no_exif():
-    """Test 2: No EXIF (PNG)"""
+    """Test 2: No EXIF (PNG) — nothing written to metadata"""
     img = Image.new("RGB", (400, 300))
     buf = BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
     
     img = Image.open(buf)
-    result = extract_exif(img)
+    item = _make_item()
+    extract_exif(img, item)
     
-    assert result is None
+    assert "exif" not in item.metadata["system"]
 
 
 def test_partial_exif():
     """Test 3: Partial EXIF (only orientation)"""
     buf = create_test_image_with_exif(100, 80, {Base.Orientation: 1})
     img = Image.open(buf)
-    result = extract_exif(img)
+    item = _make_item()
+    extract_exif(img, item)
     
-    assert result is not None
-    assert result["orientation"] == 1
-    assert "camera_make" not in result
-    assert "iso" not in result
+    exif = item.metadata["system"]["exif"]
+    assert exif["orientation"] == 1
+    assert "cameraMake" not in exif
+    assert "iso" not in exif
 
 
 def test_gps_northern_eastern():
@@ -111,11 +121,12 @@ def test_gps_northern_eastern():
     
     buf = create_test_image_with_exif(800, 600, gps_tags=gps_tags)
     img = Image.open(buf)
-    result = extract_gps(img)
+    item = _make_item()
+    extract_gps(img, item)
     
-    assert result is not None
-    assert result["latitude"] > 0
-    assert result["longitude"] > 0
+    assert item.metadata["system"]["location"]["latitude"] > 0
+    assert item.metadata["system"]["location"]["longitude"] > 0
+    assert item.metadata["user"]["location"]["latitude"] > 0
 
 
 def test_gps_southern_hemisphere():
@@ -129,11 +140,11 @@ def test_gps_southern_hemisphere():
     
     buf = create_test_image_with_exif(800, 600, gps_tags=gps_tags)
     img = Image.open(buf)
-    result = extract_gps(img)
+    item = _make_item()
+    extract_gps(img, item)
     
-    assert result is not None
-    assert result["latitude"] < 0
-    assert result["longitude"] > 0
+    assert item.metadata["system"]["location"]["latitude"] < 0
+    assert item.metadata["system"]["location"]["longitude"] > 0
 
 
 def test_gps_western_hemisphere():
@@ -147,15 +158,15 @@ def test_gps_western_hemisphere():
     
     buf = create_test_image_with_exif(800, 600, gps_tags=gps_tags)
     img = Image.open(buf)
-    result = extract_gps(img)
+    item = _make_item()
+    extract_gps(img, item)
     
-    assert result is not None
-    assert result["latitude"] > 0
-    assert result["longitude"] < 0
+    assert item.metadata["system"]["location"]["latitude"] > 0
+    assert item.metadata["system"]["location"]["longitude"] < 0
 
 
 def test_gps_incomplete():
-    """Test 7: GPS — incomplete (lat only)"""
+    """Test 7: GPS — incomplete (lat only) — nothing written"""
     gps_tags = {
         GPS.GPSLatitudeRef: "N",
         GPS.GPSLatitude: [IFDRational(32, 1), IFDRational(5, 1), IFDRational(7, 1)],
@@ -163,9 +174,10 @@ def test_gps_incomplete():
     
     buf = create_test_image_with_exif(800, 600, gps_tags=gps_tags)
     img = Image.open(buf)
-    result = extract_gps(img)
+    item = _make_item()
+    extract_gps(img, item)
     
-    assert result is None
+    assert "location" not in item.metadata["system"]
 
 
 def test_gps_with_altitude():
@@ -181,11 +193,10 @@ def test_gps_with_altitude():
     
     buf = create_test_image_with_exif(800, 600, gps_tags=gps_tags)
     img = Image.open(buf)
-    result = extract_gps(img)
+    item = _make_item()
+    extract_gps(img, item)
     
-    assert result is not None
-    assert "altitude" in result
-    assert result["altitude"] == 15.0
+    assert item.metadata["system"]["location"]["altitude"] == 15.0
 
 
 def test_gps_altitude_below_sea_level():
@@ -201,11 +212,10 @@ def test_gps_altitude_below_sea_level():
     
     buf = create_test_image_with_exif(800, 600, gps_tags=gps_tags)
     img = Image.open(buf)
-    result = extract_gps(img)
+    item = _make_item()
+    extract_gps(img, item)
     
-    assert result is not None
-    assert "altitude" in result
-    assert result["altitude"] == -15.0
+    assert item.metadata["system"]["location"]["altitude"] == -15.0
 
 
 def test_flash_fired():
@@ -220,10 +230,10 @@ def test_flash_fired():
     buf.seek(0)
     
     img = Image.open(buf)
-    result = extract_exif(img)
+    item = _make_item()
+    extract_exif(img, item)
     
-    assert result is not None
-    assert result["flash"] is True
+    assert item.metadata["system"]["exif"]["flash"] is True
 
 
 def test_flash_not_fired():
@@ -238,10 +248,10 @@ def test_flash_not_fired():
     buf.seek(0)
     
     img = Image.open(buf)
-    result = extract_exif(img)
+    item = _make_item()
+    extract_exif(img, item)
     
-    assert result is not None
-    assert result["flash"] is False
+    assert item.metadata["system"]["exif"]["flash"] is False
 
 
 def test_flash_with_red_eye():
@@ -256,10 +266,10 @@ def test_flash_with_red_eye():
     buf.seek(0)
     
     img = Image.open(buf)
-    result = extract_exif(img)
+    item = _make_item()
+    extract_exif(img, item)
     
-    assert result is not None
-    assert result["flash"] is True
+    assert item.metadata["system"]["exif"]["flash"] is True
 
 
 def test_exposure_time_formatting():
@@ -274,10 +284,10 @@ def test_exposure_time_formatting():
     buf.seek(0)
     
     img = Image.open(buf)
-    result = extract_exif(img)
+    item = _make_item()
+    extract_exif(img, item)
     
-    assert result is not None
-    assert result["exposure_time"] == "1/120"
+    assert item.metadata["system"]["exif"]["exposureTime"] == "1/120"
 
 
 def test_exposure_time_ge_1_second():
@@ -292,10 +302,10 @@ def test_exposure_time_ge_1_second():
     buf.seek(0)
     
     img = Image.open(buf)
-    result = extract_exif(img)
+    item = _make_item()
+    extract_exif(img, item)
     
-    assert result is not None
-    assert result["exposure_time"] == "5/2"
+    assert item.metadata["system"]["exif"]["exposureTime"] == "5/2"
 
 
 def test_white_balance_auto():
@@ -310,10 +320,10 @@ def test_white_balance_auto():
     buf.seek(0)
     
     img = Image.open(buf)
-    result = extract_exif(img)
+    item = _make_item()
+    extract_exif(img, item)
     
-    assert result is not None
-    assert result["white_balance"] == 0
+    assert item.metadata["system"]["exif"]["whiteBalance"] == 0
 
 
 def test_white_balance_manual():
@@ -328,10 +338,10 @@ def test_white_balance_manual():
     buf.seek(0)
     
     img = Image.open(buf)
-    result = extract_exif(img)
+    item = _make_item()
+    extract_exif(img, item)
     
-    assert result is not None
-    assert result["white_balance"] == 1
+    assert item.metadata["system"]["exif"]["whiteBalance"] == 1
 
 
 def test_null_bytes_in_string():
@@ -339,15 +349,14 @@ def test_null_bytes_in_string():
     exif_tags = {Base.Make: "Apple\x00"}
     buf = create_test_image_with_exif(800, 600, exif_tags)
     img = Image.open(buf)
-    result = extract_exif(img)
+    item = _make_item()
+    extract_exif(img, item)
     
-    assert result is not None
-    assert result["camera_make"] == "Apple"
+    assert item.metadata["system"]["exif"]["cameraMake"] == "Apple"
 
 
 def test_corrupt_exif_partial():
     """Test 18: Corrupt EXIF — partial (one tag unreadable)"""
-    # This test simulates a scenario where one tag might fail but others succeed
     # Our implementation has try/except per tag, so other tags should still extract
     exif_tags = {
         Base.Orientation: 1,
@@ -356,8 +365,9 @@ def test_corrupt_exif_partial():
     
     buf = create_test_image_with_exif(800, 600, exif_tags)
     img = Image.open(buf)
-    result = extract_exif(img)
+    item = _make_item()
+    extract_exif(img, item)
     
-    assert result is not None
-    assert result["orientation"] == 1
-    assert result["camera_make"] == "Apple"
+    exif = item.metadata["system"]["exif"]
+    assert exif["orientation"] == 1
+    assert exif["cameraMake"] == "Apple"

@@ -1,10 +1,10 @@
-import pytest
+from PIL import Image
 
-from metadata import build_metadata
+from metadata_extractor import map_exif_keys, build_location, set_image_dimensions
 
 
-def test_full_data():
-    """Test 1: Full data"""
+def test_full_exif_key_mapping():
+    """All snake_case EXIF keys are mapped to camelCase"""
     exif_data = {
         "orientation": 1,
         "camera_make": "Apple",
@@ -20,212 +20,113 @@ def test_full_data():
         "white_balance": 0,
     }
     
-    gps_data = {
-        "latitude": 32.0853,
-        "longitude": 34.7818,
-        "altitude": 15.0,
-    }
+    result = map_exif_keys(exif_data)
     
-    result = build_metadata(4032, 3024, 3, "abc123", exif_data, gps_data)
-    
-    assert "system" in result
-    assert "user" in result
-    assert result["system"]["width"] == 4032
-    assert result["system"]["height"] == 3024
-    assert result["system"]["channels"] == 3
-    assert result["system"]["thumbnailId"] == "abc123"
-    assert "exif" in result["system"]
-    assert result["system"]["exif"]["orientation"] == 1
-    assert result["system"]["exif"]["cameraMake"] == "Apple"
-    assert result["system"]["exif"]["cameraModel"] == "iPhone 15 Pro"
-    assert result["system"]["exif"]["dateTime"] == "2024:01:15 10:30:45"
-    assert result["system"]["exif"]["iso"] == 100
-    assert result["system"]["exif"]["aperture"] == 1.78
-    assert result["system"]["exif"]["exposureTime"] == "1/120"
-    assert result["system"]["exif"]["focalLength"] == 6.765
-    assert result["system"]["exif"]["focalLength35mm"] == 24
-    assert result["system"]["exif"]["lensModel"] == "iPhone 15 Pro back camera 6.765mm f/1.78"
-    assert result["system"]["exif"]["flash"] is False
-    assert result["system"]["exif"]["whiteBalance"] == 0
-    assert "location" in result["system"]
-    assert result["system"]["location"]["latitude"] == 32.0853
-    assert result["system"]["location"]["longitude"] == 34.7818
-    assert result["system"]["location"]["altitude"] == 15.0
-    assert result["user"]["location"]["latitude"] == 32.0853
-    assert result["user"]["location"]["longitude"] == 34.7818
-    assert result["user"]["location"]["altitude"] == 15.0
-
-
-def test_no_exif_no_gps():
-    """Test 2: No EXIF, no GPS"""
-    result = build_metadata(4032, 3024, 3, "abc123", None, None)
-    
-    assert "system" in result
-    assert "user" not in result
-    assert result["system"]["width"] == 4032
-    assert result["system"]["height"] == 3024
-    assert result["system"]["channels"] == 3
-    assert result["system"]["thumbnailId"] == "abc123"
-    assert "exif" not in result["system"]
-    assert "location" not in result["system"]
-
-
-def test_exif_but_no_gps():
-    """Test 3: EXIF but no GPS"""
-    exif_data = {
-        "orientation": 1,
-        "iso": 100,
-    }
-    
-    result = build_metadata(4032, 3024, 3, "abc123", exif_data, None)
-    
-    assert "system" in result
-    assert "user" not in result
-    assert "exif" in result["system"]
-    assert result["system"]["exif"]["orientation"] == 1
-    assert result["system"]["exif"]["iso"] == 100
-    assert "location" not in result["system"]
-
-
-def test_gps_but_no_exif():
-    """Test 4: GPS but no EXIF"""
-    gps_data = {
-        "latitude": 32.0853,
-        "longitude": 34.7818,
-    }
-    
-    result = build_metadata(4032, 3024, 3, "abc123", None, gps_data)
-    
-    assert "system" in result
-    assert "user" in result
-    assert "exif" not in result["system"]
-    assert "location" in result["system"]
-    assert result["system"]["location"]["latitude"] == 32.0853
-    assert result["system"]["location"]["longitude"] == 34.7818
-    assert result["user"]["location"]["latitude"] == 32.0853
-    assert result["user"]["location"]["longitude"] == 34.7818
-
-
-def test_partial_exif():
-    """Test 5: Partial EXIF"""
-    exif_data = {
-        "orientation": 1,
-        "iso": 100,
-    }
-    
-    result = build_metadata(4032, 3024, 3, "abc123", exif_data, None)
-    
-    assert "exif" in result["system"]
-    assert result["system"]["exif"]["orientation"] == 1
-    assert result["system"]["exif"]["iso"] == 100
-    assert "cameraMake" not in result["system"]["exif"]
-
-
-def test_empty_exif_dict():
-    """Test 6: Empty EXIF dict"""
-    result = build_metadata(4032, 3024, 3, "abc123", {}, None)
-    
-    assert "exif" not in result["system"]
-
-
-def test_gps_with_altitude():
-    """Test 7: GPS with altitude"""
-    gps_data = {
-        "latitude": 32.0853,
-        "longitude": 34.7818,
-        "altitude": 15.0,
-    }
-    
-    result = build_metadata(4032, 3024, 3, "abc123", None, gps_data)
-    
-    assert "altitude" in result["system"]["location"]
-    assert result["system"]["location"]["altitude"] == 15.0
-    assert "altitude" in result["user"]["location"]
-    assert result["user"]["location"]["altitude"] == 15.0
-
-
-def test_gps_without_altitude():
-    """Test 8: GPS without altitude"""
-    gps_data = {
-        "latitude": 32.0853,
-        "longitude": 34.7818,
-    }
-    
-    result = build_metadata(4032, 3024, 3, "abc123", None, gps_data)
-    
-    assert "altitude" not in result["system"]["location"]
-    assert "altitude" not in result["user"]["location"]
-
-
-def test_key_mapping_correctness():
-    """Test 9: Key mapping correctness"""
-    exif_data = {
-        "orientation": 1,
-        "camera_make": "Apple",
-        "camera_model": "iPhone 15 Pro",
-        "date_time": "2024:01:15 10:30:45",
-        "iso": 100,
-        "aperture": 1.78,
-        "exposure_time": "1/120",
-        "focal_length": 6.765,
-        "focal_length_35mm": 24,
-        "lens_model": "iPhone 15 Pro back camera 6.765mm f/1.78",
-        "flash": False,
-        "white_balance": 0,
-    }
-    
-    result = build_metadata(4032, 3024, 3, "abc123", exif_data, None)
-    
-    assert "orientation" in result["system"]["exif"]
-    assert "cameraMake" in result["system"]["exif"]
-    assert "cameraModel" in result["system"]["exif"]
-    assert "dateTime" in result["system"]["exif"]
-    assert "iso" in result["system"]["exif"]
-    assert "aperture" in result["system"]["exif"]
-    assert "exposureTime" in result["system"]["exif"]
-    assert "focalLength" in result["system"]["exif"]
-    assert "focalLength35mm" in result["system"]["exif"]
-    assert "lensModel" in result["system"]["exif"]
-    assert "flash" in result["system"]["exif"]
-    assert "whiteBalance" in result["system"]["exif"]
+    assert result["orientation"] == 1
+    assert result["cameraMake"] == "Apple"
+    assert result["cameraModel"] == "iPhone 15 Pro"
+    assert result["dateTime"] == "2024:01:15 10:30:45"
+    assert result["iso"] == 100
+    assert result["aperture"] == 1.78
+    assert result["exposureTime"] == "1/120"
+    assert result["focalLength"] == 6.765
+    assert result["focalLength35mm"] == 24
+    assert result["lensModel"] == "iPhone 15 Pro back camera 6.765mm f/1.78"
+    assert result["flash"] is False
+    assert result["whiteBalance"] == 0
     
     # Ensure snake_case keys are NOT present
-    assert "camera_make" not in result["system"]["exif"]
-    assert "camera_model" not in result["system"]["exif"]
-    assert "date_time" not in result["system"]["exif"]
-    assert "exposure_time" not in result["system"]["exif"]
-    assert "focal_length" not in result["system"]["exif"]
-    assert "focal_length_35mm" not in result["system"]["exif"]
-    assert "lens_model" not in result["system"]["exif"]
-    assert "white_balance" not in result["system"]["exif"]
+    assert "camera_make" not in result
+    assert "camera_model" not in result
+    assert "date_time" not in result
+    assert "exposure_time" not in result
+    assert "focal_length" not in result
+    assert "focal_length_35mm" not in result
+    assert "lens_model" not in result
+    assert "white_balance" not in result
 
 
-def test_no_thumbnail_id():
-    """Test 10: No thumbnailId"""
-    result = build_metadata(4032, 3024, 3, None, None, None)
-    
-    assert "thumbnailId" not in result["system"]
-
-
-def test_no_null_values():
-    """Test 11: No null values"""
+def test_partial_exif_key_mapping():
+    """Only present keys are mapped"""
     exif_data = {
         "orientation": 1,
         "iso": 100,
     }
     
-    gps_data = {
-        "latitude": 32.0853,
-        "longitude": 34.7818,
+    result = map_exif_keys(exif_data)
+    
+    assert result["orientation"] == 1
+    assert result["iso"] == 100
+    assert "cameraMake" not in result
+
+
+def test_empty_exif_returns_empty():
+    """Empty dict returns empty dict"""
+    result = map_exif_keys({})
+    assert result == {}
+
+
+def test_unknown_keys_ignored():
+    """Keys not in the mapping are silently dropped"""
+    exif_data = {
+        "orientation": 1,
+        "unknown_key": "value",
     }
     
-    result = build_metadata(4032, 3024, 3, "abc123", exif_data, gps_data)
+    result = map_exif_keys(exif_data)
+    assert result == {"orientation": 1}
+
+
+def test_build_location_lat_lon():
+    """Lat/lon are required in the output"""
+    gps_data = {"latitude": 32.0853, "longitude": 34.7818}
+    result = build_location(gps_data)
     
-    def check_no_none(d):
-        for v in d.values():
-            if isinstance(v, dict):
-                check_no_none(v)
-            else:
-                assert v is not None
+    assert result["latitude"] == 32.0853
+    assert result["longitude"] == 34.7818
+    assert "altitude" not in result
+
+
+def test_build_location_with_altitude():
+    """Altitude is included when present"""
+    gps_data = {"latitude": 32.0853, "longitude": 34.7818, "altitude": 15.0}
+    result = build_location(gps_data)
     
-    check_no_none(result)
+    assert result["altitude"] == 15.0
+
+
+def test_build_location_no_null_values():
+    """No None values in the returned dict"""
+    gps_data = {"latitude": 32.0853, "longitude": 34.7818, "altitude": 15.0}
+    result = build_location(gps_data)
+    
+    for v in result.values():
+        assert v is not None
+
+
+def test_set_image_dimensions_rgb():
+    """Writes width, height, channels to item.metadata.system"""
+    class MockItem:
+        def __init__(self):
+            self.metadata = {"system": {}}
+    
+    item = MockItem()
+    img = Image.new("RGB", (800, 600))
+    set_image_dimensions(item, img)
+    
+    assert item.metadata["system"]["width"] == 800
+    assert item.metadata["system"]["height"] == 600
+    assert item.metadata["system"]["channels"] == 3
+
+
+def test_set_image_dimensions_rgba():
+    """RGBA image reports 4 channels"""
+    class MockItem:
+        def __init__(self):
+            self.metadata = {"system": {}}
+    
+    item = MockItem()
+    img = Image.new("RGBA", (1024, 768))
+    set_image_dimensions(item, img)
+    
+    assert item.metadata["system"]["channels"] == 4

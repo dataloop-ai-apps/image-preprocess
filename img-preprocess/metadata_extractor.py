@@ -1,25 +1,76 @@
 import logging
-from typing import Dict, Optional
+from typing import Dict, Any
 
 from PIL import Image
 from PIL.ExifTags import Base, GPS, IFD
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("image-preprocess")
 
 
-def extract_exif(img: Image.Image) -> Optional[Dict[str, any]]:
-    """Extract EXIF metadata from a Pillow Image.
+def set_image_dimensions(item, img: Image.Image):
+    """Write image width, height, and channel count to item.metadata.system."""
+    width, height = img.size
+    channels = len(img.getbands())
+    item.metadata["system"]["width"] = width
+    item.metadata["system"]["height"] = height
+    item.metadata["system"]["channels"] = channels
+
+
+def map_exif_keys(exif_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Map snake_case EXIF keys to camelCase for item.metadata.system.exif."""
+    key_mapping = {
+        "orientation": "orientation",
+        "camera_make": "cameraMake",
+        "camera_model": "cameraModel",
+        "date_time": "dateTime",
+        "iso": "iso",
+        "aperture": "aperture",
+        "exposure_time": "exposureTime",
+        "focal_length": "focalLength",
+        "focal_length_35mm": "focalLength35mm",
+        "lens_model": "lensModel",
+        "flash": "flash",
+        "white_balance": "whiteBalance",
+    }
     
-    Returns a dict with snake_case keys for present fields,
-    or None if no EXIF data exists at all.
+    mapped = {}
+    for snake_key, value in exif_data.items():
+        if snake_key in key_mapping:
+            mapped[key_mapping[snake_key]] = value
+    
+    return mapped
+
+
+def build_location(gps_data: Dict[str, float]) -> Dict[str, float]:
+    """Build location dict from GPS coordinates for item.metadata."""
+    location = {
+        "latitude": gps_data["latitude"],
+        "longitude": gps_data["longitude"],
+    }
+    
+    # Altitude is optional
+    if "altitude" in gps_data:
+        location["altitude"] = gps_data["altitude"]
+    
+    return location
+
+
+def extract_exif(img: Image.Image, item):
+    """Extract EXIF metadata from image and write to item.metadata.system.exif.
+    
+    Sets camelCase keys on item.metadata["system"]["exif"].
+    Does nothing if no EXIF data exists.
     """
     try:
         exif = img.getexif()
         if not exif:
-            return None
+            return
     except Exception as e:
         logger.warning(f"Failed to get EXIF data: {e}")
-        return None
+        item.metadata.setdefault("system", {}).setdefault("etl", {}).setdefault("errors", []).append(
+            f"Exif extraction failed: {e}"
+        )
+        return
     
     result = {}
     
@@ -137,33 +188,31 @@ def extract_exif(img: Image.Image) -> Optional[Dict[str, any]]:
     except Exception as e:
         logger.warning(f"Failed to extract white balance: {e}")
     
-    return result if result else None
+    if result:
+        item.metadata.setdefault("system", {})["exif"] = map_exif_keys(result)
 
 
-def extract_gps(img: Image.Image) -> Optional[Dict[str, float]]:
-    """Extract GPS coordinates from EXIF.
+def extract_gps(img: Image.Image, item):
+    """Extract GPS coordinates from EXIF and write to item metadata.
     
-    Returns {"latitude": float, "longitude": float, "altitude": float}
-    or None if GPS data is absent/incomplete (both lat+lon required).
-    Latitude/longitude are signed decimal degrees (S/W = negative).
-    Altitude is meters; negative if below sea level (GPSAltitudeRef=1).
-    Altitude is optional within the returned dict.
+    Sets item.metadata["system"]["location"] and item.metadata["user"]["location"].
+    Does nothing if GPS data is absent or incomplete (both lat+lon required).
     """
     try:
         exif = img.getexif()
         if not exif:
-            return None
+            return
     except Exception as e:
         logger.warning(f"Failed to get EXIF data for GPS: {e}")
-        return None
+        return
     
     try:
         gps_ifd = exif.get_ifd(IFD.GPSInfo)
         if not gps_ifd:
-            return None
+            return
     except Exception as e:
         logger.warning(f"Failed to get GPS IFD: {e}")
-        return None
+        return
     
     result = {}
     
@@ -173,7 +222,7 @@ def extract_gps(img: Image.Image) -> Optional[Dict[str, float]]:
         lat = gps_ifd.get(GPS.GPSLatitude)
         
         if lat_ref is None or lat is None:
-            return None
+            return
         
         # Convert DMS to decimal degrees
         def to_float(val):
@@ -193,7 +242,7 @@ def extract_gps(img: Image.Image) -> Optional[Dict[str, float]]:
         result["latitude"] = latitude
     except Exception as e:
         logger.warning(f"Failed to extract latitude: {e}")
-        return None
+        return
     
     # Longitude
     try:
@@ -201,7 +250,7 @@ def extract_gps(img: Image.Image) -> Optional[Dict[str, float]]:
         lon = gps_ifd.get(GPS.GPSLongitude)
         
         if lon_ref is None or lon is None:
-            return None
+            return
         
         # Convert DMS to decimal degrees
         lon_deg = to_float(lon[0])
@@ -216,7 +265,7 @@ def extract_gps(img: Image.Image) -> Optional[Dict[str, float]]:
         result["longitude"] = longitude
     except Exception as e:
         logger.warning(f"Failed to extract longitude: {e}")
-        return None
+        return
     
     # Altitude (optional)
     try:
@@ -244,4 +293,6 @@ def extract_gps(img: Image.Image) -> Optional[Dict[str, float]]:
         logger.warning(f"Failed to extract altitude: {e}")
         # Altitude is optional, so don't fail if extraction fails
     
-    return result
+    location = build_location(result)
+    item.metadata.setdefault("system", {})["location"] = location
+    item.metadata.setdefault("user", {})["location"] = location
