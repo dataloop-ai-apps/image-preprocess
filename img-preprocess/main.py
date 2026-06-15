@@ -5,6 +5,7 @@ from io import BytesIO
 import dtlpy as dl
 from PIL import Image
 
+from etl_errors import record_etl_error
 from metadata_extractor import extract_exif, set_image_dimensions
 from thumbnail import create_and_upload_thumbnail
 
@@ -40,79 +41,77 @@ class ServiceRunner(dl.BaseServiceRunner):
         if not ENABLE_IMAGE_PREPROCESS:
             logger.info("Image preprocessing disabled via ENABLE_IMAGE_PREPROCESS")
             return item
-        
-        # Clear stale ETL from previous runs
-        item.metadata.setdefault("system", {}).pop("etl", None)
 
-        # Reject non-image items
-        mimetype = item.metadata.get("system", {}).get("mimetype", "")
-        if not mimetype.startswith("image/"):
-            logger.info(f"Skipping non-image item: {mimetype}")
-            item.metadata["system"]["etl"] = {"failed": True, "errors": [f"Unsupported mimetype: {mimetype}"]}
-            item = item.update(system_metadata=True)
-            return item
-        
-        # Reject files exceeding size limit
-        file_size = item.metadata.get("system", {}).get("size", 0)
-        if file_size > max_file_size_mb * 1024 * 1024:
-            logger.error(f"File too large: {file_size} bytes > {max_file_size_mb}MB")
-            item.metadata["system"]["etl"] = {
-                "failed": True,
-                "errors": [f"File too large: {file_size} bytes exceeds {max_file_size_mb}MB limit"],
-            }
-            item = item.update(system_metadata=True)
-            return item
-        
-        # Download item binary content
+        buffer = None
         try:
-            buffer = item.download(save_locally=False)
-            if not isinstance(buffer, BytesIO):
-                buffer = BytesIO(buffer)
-        except Exception as e:
-            logger.exception(f"Failed to download item {item.id}")
-            item.metadata["system"]["etl"] = {
-                "failed": True,
-                "errors": [f"Download failed: {e}"],
-            }
-            item = item.update(system_metadata=True)
-            return item
-        
-        # Open image and write dimensions to metadata
-        try:
-            buffer.seek(0)
-            img = Image.open(buffer)
-            img.load()
-        except Exception as e:
-            logger.exception(f"Failed to open/read image for item {item.id}")
-            item.metadata["system"]["etl"] = {
-                "failed": True,
-                "errors": [f"Image metadata extraction failed: {e}"],
-            }
-            item = item.update(system_metadata=True)
-            buffer.close()
-            return item
-        
-        set_image_dimensions(item, img)
+            # Clear stale ETL from previous runs
+            item.metadata.setdefault("system", {}).pop("etl", None)
 
-        # Shared ETL errors list — all extractors append non-fatal errors here
-        errors = item.metadata.setdefault("system", {}).setdefault("etl", {}).setdefault("errors", [])
+            # Reject non-image items
+            mimetype = item.metadata.get("system", {}).get("mimetype", "")
+            if not mimetype.startswith("image/"):
+                logger.info(f"Skipping non-image item: {mimetype}")
+                record_etl_error(item, stage="validation", error=f"Unsupported mimetype: {mimetype}", failed=True)
+                return item
 
-        # Extract EXIF and GPS, each writes directly to item.metadata
-        if mode in ('full', 'metadata-only'):
+            # Reject files exceeding size limit
+            file_size = item.metadata.get("system", {}).get("size", 0)
+            if file_size > max_file_size_mb * 1024 * 1024:
+                logger.error(f"File too large: {file_size} bytes > {max_file_size_mb}MB")
+                record_etl_error(
+                    item,
+                    stage="validation",
+                    error=f"File too large: {file_size} bytes exceeds {max_file_size_mb}MB limit",
+                    failed=True,
+                )
+                return item
+
+            # Download item binary content
             try:
-                extract_exif(img, item, errors)
+                buffer = item.download(save_locally=False)
+                if not isinstance(buffer, BytesIO):
+                    buffer = BytesIO(buffer)
             except Exception as e:
-                logger.exception(f"Failed to extract EXIF for item {item.id}")
-                errors.append(f"Exif extraction failed: {e}")
-        
-        # WARNING: thumbnail generation mutates img (resize in-place).
-        # This MUST remain the last step that uses img.
-        if mode in ('full', 'thumbnail-only'):
+                logger.exception(f"Failed to download item {item.id}")
+                record_etl_error(item, stage="download", error=f"Download failed: {e}", failed=True)
+                return item
+
+            # Open image and write dimensions to metadata
             try:
-                create_and_upload_thumbnail(img, item, errors, default_thumb_size)
+                buffer.seek(0)
+                img = Image.open(buffer)
+                img.load()
             except Exception as e:
-                logger.exception(f"Failed to generate thumbnail for item {item.id}")
-                errors.append(f"Thumbnail generation failed: {e}")
-        
-        item = item.update(system_metadata=True)
-        return item
+                logger.exception(f"Failed to open/read image for item {item.id}")
+                record_etl_error(
+                    item,
+                    stage="image_open",
+                    error=f"Image metadata extraction failed: {e}",
+                    failed=True,
+                )
+                return item
+
+            set_image_dimensions(item, img)
+
+            # Extract EXIF and GPS, each writes directly to item.metadata
+            if mode in ('full', 'metadata-only'):
+                try:
+                    extract_exif(img, item)
+                except Exception as e:
+                    logger.exception(f"Failed to extract EXIF for item {item.id}")
+                    record_etl_error(item, stage="exif", error=f"Exif extraction failed: {e}")
+
+            # WARNING: thumbnail generation mutates img (resize in-place).
+            # This MUST remain the last step that uses img.
+            if mode in ('full', 'thumbnail-only'):
+                try:
+                    create_and_upload_thumbnail(img, item, default_thumb_size)
+                except Exception as e:
+                    logger.exception(f"Failed to generate thumbnail for item {item.id}")
+                    record_etl_error(item, stage="thumbnail", error=f"Thumbnail generation failed: {e}")
+
+            return item
+        finally:
+            if buffer is not None:
+                buffer.close()
+            item = item.update(system_metadata=True)

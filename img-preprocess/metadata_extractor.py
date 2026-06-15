@@ -4,6 +4,8 @@ from typing import Dict, Any
 from PIL import Image
 from PIL.ExifTags import Base, GPS, IFD
 
+from etl_errors import record_etl_error
+
 logger = logging.getLogger("image-preprocess")
 
 
@@ -77,12 +79,12 @@ def build_location(gps_data: Dict[str, float]) -> Dict[str, float]:
     return location
 
 
-def extract_exif(img: Image.Image, item, errors: list):
+def extract_exif(img: Image.Image, item):
     """Extract EXIF metadata from image and write to item.metadata.system.exif.
-    
+
     Sets camelCase keys on item.metadata["system"]["exif"].
     Does nothing if no EXIF data exists.
-    Appends non-fatal errors to the provided ``errors`` list.
+    Non-fatal errors are recorded via ``record_etl_error``.
     """
     try:
         exif = img.getexif()
@@ -90,7 +92,7 @@ def extract_exif(img: Image.Image, item, errors: list):
             return
     except Exception as e:
         logger.warning(f"Failed to get EXIF data: {e}")
-        errors.append(f"Exif extraction failed: {e}")
+        record_etl_error(item, stage="exif", error=f"Exif extraction failed: {e}")
         return
     
     try:
@@ -132,7 +134,7 @@ def extract_exif(img: Image.Image, item, errors: list):
     if result:
         item.metadata.setdefault("system", {})["exif"] = map_exif_keys(result)
 
-    extract_gps(exif, item, errors)
+    extract_gps(exif, item)
 
 
 def _dms_to_decimal(dms, ref, negative_ref):
@@ -142,12 +144,12 @@ def _dms_to_decimal(dms, ref, negative_ref):
     return -decimal if ref == negative_ref else decimal
 
 
-def extract_gps(exif, item, errors: list):
+def extract_gps(exif, item):
     """Extract GPS coordinates from a PIL Exif object and write to item metadata.
 
     Sets item.metadata["system"]["location"] and item.metadata["user"]["location"].
     Does nothing if GPS data is absent or incomplete (both lat+lon required).
-    Appends non-fatal errors to the provided ``errors`` list.
+    Non-fatal errors are recorded via ``record_etl_error``.
     """
     try:
         gps_ifd = exif.get_ifd(IFD.GPSInfo)
@@ -174,7 +176,7 @@ def extract_gps(exif, item, errors: list):
                     alt_value = -alt_value
             result["altitude"] = alt_value
     except Exception as e:
-        errors.append(f"GPS extraction failed: {e}")
+        record_etl_error(item, stage="gps", error=f"GPS extraction failed: {e}")
         logger.warning(f"Failed to extract GPS: {e}")
         return
 

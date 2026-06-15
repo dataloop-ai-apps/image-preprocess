@@ -66,7 +66,7 @@ def test_full_exif_extraction():
     
     img = Image.open(buf)
     item = _make_item()
-    extract_exif(img, item, [])
+    extract_exif(img, item)
     
     exif = item.metadata["system"]["exif"]
     assert exif["orientation"] == 1
@@ -92,7 +92,7 @@ def test_no_exif():
     
     img = Image.open(buf)
     item = _make_item()
-    extract_exif(img, item, [])
+    extract_exif(img, item)
     
     assert "exif" not in item.metadata["system"]
 
@@ -102,7 +102,7 @@ def test_partial_exif():
     buf = create_test_image_with_exif(100, 80, {Base.Orientation: 1})
     img = Image.open(buf)
     item = _make_item()
-    extract_exif(img, item, [])
+    extract_exif(img, item)
     
     exif = item.metadata["system"]["exif"]
     assert exif["orientation"] == 1
@@ -122,7 +122,7 @@ def test_gps_northern_eastern():
     buf = create_test_image_with_exif(800, 600, gps_tags=gps_tags)
     img = Image.open(buf)
     item = _make_item()
-    extract_gps(img.getexif(), item, [])
+    extract_gps(img.getexif(), item)
     
     assert item.metadata["system"]["location"]["latitude"] > 0
     assert item.metadata["system"]["location"]["longitude"] > 0
@@ -141,7 +141,7 @@ def test_gps_southern_hemisphere():
     buf = create_test_image_with_exif(800, 600, gps_tags=gps_tags)
     img = Image.open(buf)
     item = _make_item()
-    extract_gps(img.getexif(), item, [])
+    extract_gps(img.getexif(), item)
     
     assert item.metadata["system"]["location"]["latitude"] < 0
     assert item.metadata["system"]["location"]["longitude"] > 0
@@ -159,7 +159,7 @@ def test_gps_western_hemisphere():
     buf = create_test_image_with_exif(800, 600, gps_tags=gps_tags)
     img = Image.open(buf)
     item = _make_item()
-    extract_gps(img.getexif(), item, [])
+    extract_gps(img.getexif(), item)
     
     assert item.metadata["system"]["location"]["latitude"] > 0
     assert item.metadata["system"]["location"]["longitude"] < 0
@@ -175,7 +175,7 @@ def test_gps_incomplete():
     buf = create_test_image_with_exif(800, 600, gps_tags=gps_tags)
     img = Image.open(buf)
     item = _make_item()
-    extract_gps(img.getexif(), item, [])
+    extract_gps(img.getexif(), item)
     
     assert "location" not in item.metadata["system"]
 
@@ -194,7 +194,7 @@ def test_gps_with_altitude():
     buf = create_test_image_with_exif(800, 600, gps_tags=gps_tags)
     img = Image.open(buf)
     item = _make_item()
-    extract_gps(img.getexif(), item, [])
+    extract_gps(img.getexif(), item)
     
     assert item.metadata["system"]["location"]["altitude"] == 15.0
 
@@ -213,7 +213,7 @@ def test_gps_altitude_below_sea_level():
     buf = create_test_image_with_exif(800, 600, gps_tags=gps_tags)
     img = Image.open(buf)
     item = _make_item()
-    extract_gps(img.getexif(), item, [])
+    extract_gps(img.getexif(), item)
     
     assert item.metadata["system"]["location"]["altitude"] == -15.0
 
@@ -231,7 +231,7 @@ def test_flash_fired():
     
     img = Image.open(buf)
     item = _make_item()
-    extract_exif(img, item, [])
+    extract_exif(img, item)
     
     assert item.metadata["system"]["exif"]["flash"] is True
 
@@ -249,7 +249,7 @@ def test_flash_not_fired():
     
     img = Image.open(buf)
     item = _make_item()
-    extract_exif(img, item, [])
+    extract_exif(img, item)
     
     assert item.metadata["system"]["exif"]["flash"] is False
 
@@ -267,7 +267,7 @@ def test_flash_with_red_eye():
     
     img = Image.open(buf)
     item = _make_item()
-    extract_exif(img, item, [])
+    extract_exif(img, item)
     
     assert item.metadata["system"]["exif"]["flash"] is True
 
@@ -285,7 +285,7 @@ def test_exposure_time_formatting():
     
     img = Image.open(buf)
     item = _make_item()
-    extract_exif(img, item, [])
+    extract_exif(img, item)
     
     assert item.metadata["system"]["exif"]["exposureTime"] == "1/120"
 
@@ -303,7 +303,7 @@ def test_exposure_time_ge_1_second():
     
     img = Image.open(buf)
     item = _make_item()
-    extract_exif(img, item, [])
+    extract_exif(img, item)
     
     assert item.metadata["system"]["exif"]["exposureTime"] == "5/2"
 
@@ -321,7 +321,7 @@ def test_white_balance_auto():
     
     img = Image.open(buf)
     item = _make_item()
-    extract_exif(img, item, [])
+    extract_exif(img, item)
     
     assert item.metadata["system"]["exif"]["whiteBalance"] == 0
 
@@ -339,7 +339,7 @@ def test_white_balance_manual():
     
     img = Image.open(buf)
     item = _make_item()
-    extract_exif(img, item, [])
+    extract_exif(img, item)
     
     assert item.metadata["system"]["exif"]["whiteBalance"] == 1
 
@@ -350,7 +350,7 @@ def test_null_bytes_in_string():
     buf = create_test_image_with_exif(800, 600, exif_tags)
     img = Image.open(buf)
     item = _make_item()
-    extract_exif(img, item, [])
+    extract_exif(img, item)
     
     assert item.metadata["system"]["exif"]["cameraMake"] == "Apple"
 
@@ -366,7 +366,7 @@ def test_corrupt_exif_partial():
     buf = create_test_image_with_exif(800, 600, exif_tags)
     img = Image.open(buf)
     item = _make_item()
-    extract_exif(img, item, [])
+    extract_exif(img, item)
     
     exif = item.metadata["system"]["exif"]
     assert exif["orientation"] == 1

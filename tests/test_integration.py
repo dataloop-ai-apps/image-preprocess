@@ -20,7 +20,7 @@ def test_happy_path_full_exif_jpeg(mock_dl_item, mock_dl_progress):
     item = mock_dl_item(buffer=buf, mimetype="image/jpeg")
     
     with patch('main.create_and_upload_thumbnail') as mock_thumb:
-        mock_thumb.side_effect = lambda img, it, errs, sz: it.metadata.setdefault("system", {}).__setitem__("thumbnailId", "thumb-123")
+        mock_thumb.side_effect = lambda img, it, sz: it.metadata.setdefault("system", {}).__setitem__("thumbnailId", "thumb-123")
         runner = ServiceRunner()
         runner.on_create(item, progress=mock_dl_progress)
     
@@ -64,7 +64,7 @@ def test_non_image_mime(mock_dl_item, mock_dl_progress):
     # Should write ETL failure and update
     assert item.metadata["system"]["etl"]["failed"] is True
     assert len(item.metadata["system"]["etl"]["errors"]) == 1
-    assert "Unsupported mimetype: video/mp4" in item.metadata["system"]["etl"]["errors"][0]
+    assert "Unsupported mimetype: video/mp4" in item.metadata["system"]["etl"]["errors"][0]["error"]
     assert item.update.called
     assert result is item
 
@@ -122,7 +122,7 @@ def test_exif_extraction_fails(mock_dl_item, mock_dl_progress):
     
     with patch('main.extract_exif', side_effect=Exception("EXIF failed")):
         with patch('main.create_and_upload_thumbnail') as mock_thumb:
-            mock_thumb.side_effect = lambda img, it, errs, sz: it.metadata.setdefault("system", {}).__setitem__("thumbnailId", "thumb-123")
+            mock_thumb.side_effect = lambda img, it, sz: it.metadata.setdefault("system", {}).__setitem__("thumbnailId", "thumb-123")
             runner = ServiceRunner()
             runner.on_create(item, progress=mock_dl_progress)
     
@@ -132,7 +132,7 @@ def test_exif_extraction_fails(mock_dl_item, mock_dl_progress):
     etl = item.metadata["system"]["etl"]
     assert "failed" not in etl
     assert len(etl["errors"]) == 1
-    assert "Exif extraction failed" in etl["errors"][0]
+    assert "Exif extraction failed" in etl["errors"][0]["error"]
     # Dimensions should still be present
     assert item.metadata["system"]["width"] == 800
     assert item.metadata["system"]["height"] == 600
@@ -158,7 +158,7 @@ def test_thumbnail_gen_fails(mock_dl_item, mock_dl_progress):
     etl = item.metadata["system"]["etl"]
     assert "failed" not in etl
     assert len(etl["errors"]) == 1
-    assert "Thumbnail generation failed" in etl["errors"][0]
+    assert "Thumbnail generation failed" in etl["errors"][0]["error"]
 
 
 def test_both_fail(mock_dl_item, mock_dl_progress):
@@ -179,8 +179,8 @@ def test_both_fail(mock_dl_item, mock_dl_progress):
     etl = item.metadata["system"]["etl"]
     assert "failed" not in etl
     assert len(etl["errors"]) == 2
-    assert any("Exif extraction failed" in e for e in etl["errors"])
-    assert any("Thumbnail generation failed" in e for e in etl["errors"])
+    assert any("Exif extraction failed" in e["error"] for e in etl["errors"])
+    assert any("Thumbnail generation failed" in e["error"] for e in etl["errors"])
 
 
 def test_download_fails(mock_dl_item, mock_dl_progress):
@@ -193,7 +193,7 @@ def test_download_fails(mock_dl_item, mock_dl_progress):
     
     etl = item.metadata["system"]["etl"]
     assert etl["failed"] is True
-    assert any("Download failed" in e for e in etl["errors"])
+    assert any("Download failed" in e["error"] for e in etl["errors"])
     assert item.update.called
     assert result is item
 
@@ -251,7 +251,7 @@ def test_file_too_large(mock_dl_item, mock_dl_progress):
     assert not item.download.called
     etl = item.metadata["system"]["etl"]
     assert etl["failed"] is True
-    assert any("File too large" in e for e in etl["errors"])
+    assert any("File too large" in e["error"] for e in etl["errors"])
     assert item.update.called
     assert result is item
 
@@ -316,7 +316,7 @@ def test_default_thumb_size_override(mock_dl_item, mock_dl_progress):
         
         # Verify create_and_upload_thumbnail was called with max_edge=256
         mock_thumb.assert_called_once()
-        assert mock_thumb.call_args[0][3] == 256
+        assert mock_thumb.call_args[0][2] == 256
 
 
 def test_corrupt_image(mock_dl_item, mock_dl_progress):
@@ -332,7 +332,7 @@ def test_corrupt_image(mock_dl_item, mock_dl_progress):
     etl = item.metadata["system"]["etl"]
     assert etl["failed"] is True
     assert len(etl["errors"]) == 1
-    assert "Image metadata extraction failed" in etl["errors"][0]
+    assert "Image metadata extraction failed" in etl["errors"][0]["error"]
     assert item.update.called
     assert result is item
 
