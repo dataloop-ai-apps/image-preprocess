@@ -20,7 +20,7 @@ def test_happy_path_full_exif_jpeg(mock_dl_item, mock_dl_progress):
     item = mock_dl_item(buffer=buf, mimetype="image/jpeg")
     
     with patch('main.create_and_upload_thumbnail') as mock_thumb:
-        mock_thumb.side_effect = lambda img, it, sz: it.metadata.setdefault("system", {}).__setitem__("thumbnailId", "thumb-123")
+        mock_thumb.side_effect = lambda img, it, errs, sz: it.metadata.setdefault("system", {}).__setitem__("thumbnailId", "thumb-123")
         runner = ServiceRunner()
         runner.on_create(item, progress=mock_dl_progress)
     
@@ -122,7 +122,7 @@ def test_exif_extraction_fails(mock_dl_item, mock_dl_progress):
     
     with patch('main.extract_exif', side_effect=Exception("EXIF failed")):
         with patch('main.create_and_upload_thumbnail') as mock_thumb:
-            mock_thumb.side_effect = lambda img, it, sz: it.metadata.setdefault("system", {}).__setitem__("thumbnailId", "thumb-123")
+            mock_thumb.side_effect = lambda img, it, errs, sz: it.metadata.setdefault("system", {}).__setitem__("thumbnailId", "thumb-123")
             runner = ServiceRunner()
             runner.on_create(item, progress=mock_dl_progress)
     
@@ -316,7 +316,7 @@ def test_default_thumb_size_override(mock_dl_item, mock_dl_progress):
         
         # Verify create_and_upload_thumbnail was called with max_edge=256
         mock_thumb.assert_called_once()
-        assert mock_thumb.call_args[0][2] == 256
+        assert mock_thumb.call_args[0][3] == 256
 
 
 def test_corrupt_image(mock_dl_item, mock_dl_progress):
@@ -350,7 +350,9 @@ def test_happy_path_no_etl(mock_dl_item, mock_dl_progress):
         runner = ServiceRunner()
         result = runner.on_create(item, progress=mock_dl_progress)
     
-    assert "etl" not in item.metadata["system"]
+    etl = item.metadata["system"].get("etl", {})
+    assert "failed" not in etl
+    assert etl.get("errors", []) == []
     assert item.metadata["system"]["width"] == 800
     assert item.metadata["system"]["height"] == 600
     assert result is item
@@ -370,6 +372,8 @@ def test_rerun_clears_old_etl(mock_dl_item, mock_dl_progress):
         runner = ServiceRunner()
         result = runner.on_create(item, progress=mock_dl_progress)
     
-    assert "etl" not in item.metadata["system"]
+    etl = item.metadata["system"].get("etl", {})
+    assert "failed" not in etl
+    assert etl.get("errors", []) == []
     assert item.metadata["system"]["width"] == 800
     assert result is item

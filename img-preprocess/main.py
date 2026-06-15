@@ -5,7 +5,7 @@ from io import BytesIO
 import dtlpy as dl
 from PIL import Image
 
-from metadata_extractor import extract_exif, extract_gps, set_image_dimensions
+from metadata_extractor import extract_exif, set_image_dimensions
 from thumbnail import create_and_upload_thumbnail
 
 logger = logging.getLogger("image-preprocess")
@@ -94,23 +94,25 @@ class ServiceRunner(dl.BaseServiceRunner):
         
         set_image_dimensions(item, img)
 
+        # Shared ETL errors list — all extractors append non-fatal errors here
+        errors = item.metadata.setdefault("system", {}).setdefault("etl", {}).setdefault("errors", [])
+
         # Extract EXIF and GPS, each writes directly to item.metadata
         if mode in ('full', 'metadata-only'):
             try:
-                extract_exif(img, item)
-                extract_gps(img, item)
+                extract_exif(img, item, errors)
             except Exception as e:
                 logger.exception(f"Failed to extract EXIF for item {item.id}")
-                item.metadata["system"].setdefault("etl", {}).setdefault("errors", []).append(f"Exif extraction failed: {e}")
+                errors.append(f"Exif extraction failed: {e}")
         
         # WARNING: thumbnail generation mutates img (resize in-place).
         # This MUST remain the last step that uses img.
         if mode in ('full', 'thumbnail-only'):
             try:
-                create_and_upload_thumbnail(img, item, default_thumb_size)
+                create_and_upload_thumbnail(img, item, errors, default_thumb_size)
             except Exception as e:
                 logger.exception(f"Failed to generate thumbnail for item {item.id}")
-                item.metadata["system"].setdefault("etl", {}).setdefault("errors", []).append(f"Thumbnail generation failed: {e}")
+                errors.append(f"Thumbnail generation failed: {e}")
         
         item = item.update(system_metadata=True)
         return item

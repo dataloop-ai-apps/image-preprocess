@@ -6,10 +6,10 @@ from PIL import Image, ImageOps
 logger = logging.getLogger("image-preprocess")
 
 
-def auto_rotate(img: Image.Image, item) -> Image.Image:
+def auto_rotate(img: Image.Image, errors: list) -> Image.Image:
     """Apply EXIF orientation and return a new correctly-oriented image.
     If no orientation tag or error, returns the image unchanged (copy)
-    and appends a non-fatal ETL error to item.metadata.
+    and appends a non-fatal error to the provided ``errors`` list.
     """
     try:
         rotated = ImageOps.exif_transpose(img)
@@ -17,7 +17,7 @@ def auto_rotate(img: Image.Image, item) -> Image.Image:
             return rotated
     except Exception as e:
         logger.warning(f"Failed to auto-rotate image: {e}")
-        item.metadata["system"].setdefault("etl", {}).setdefault("errors", []).append(f"Auto-rotate failed: {e}")
+        errors.append(f"Auto-rotate failed: {e}")
     
     return img
 
@@ -80,13 +80,14 @@ def generate_thumbnail(img: Image.Image, max_edge: int = 512) -> BytesIO:
     return buf
 
 
-def create_and_upload_thumbnail(img: Image.Image, item, max_edge: int = 512):
+def create_and_upload_thumbnail(img: Image.Image, item, errors: list, max_edge: int = 128):
     """Auto-rotate, generate thumbnail, upload to dataset, and set thumbnailId on item.
 
     Combines rotation correction, thumbnail generation, and upload into a single call.
     Sets item.metadata["system"]["thumbnailId"] but does NOT call item.update().
+    Appends non-fatal errors to the provided ``errors`` list.
     """
-    rotated = auto_rotate(img, item)
+    rotated = auto_rotate(img, errors)
     thumb_buf = generate_thumbnail(rotated, max_edge)
     thumbnail_item = item.dataset.items.upload(
         local_path=thumb_buf,

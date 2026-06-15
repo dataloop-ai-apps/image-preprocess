@@ -92,20 +92,19 @@ def test_rgba_to_rgb():
 def test_auto_rotate_orientation_6():
     """Test 7: Auto-rotate orientation=6"""
     img = create_test_image(800, 600, orientation=6)
-    item = _make_item()
-    rotated = auto_rotate(img, item)
+    errors = []
+    rotated = auto_rotate(img, errors)
     
     # Orientation 6 means 90° CW rotation
     # Original 800x600 should become 600x800
     assert rotated.size == (600, 800)
-    assert "etl" not in item.metadata["system"]
+    assert errors == []
 
 
 def test_auto_rotate_orientation_1():
     """Test 8: Auto-rotate orientation=1"""
     img = create_test_image(800, 600, orientation=1)
-    item = _make_item()
-    rotated = auto_rotate(img, item)
+    rotated = auto_rotate(img, [])
     
     # Orientation 1 means no rotation
     assert rotated.size == (800, 600)
@@ -114,8 +113,7 @@ def test_auto_rotate_orientation_1():
 def test_auto_rotate_no_exif():
     """Test 9: Auto-rotate no EXIF"""
     img = create_test_image(800, 600)
-    item = _make_item()
-    rotated = auto_rotate(img, item)
+    rotated = auto_rotate(img, [])
     
     # No EXIF should return unchanged copy
     assert rotated.size == (800, 600)
