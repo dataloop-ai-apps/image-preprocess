@@ -47,18 +47,6 @@
                             {
                                 "name": "item",
                                 "type": "Item"
-                            },
-                            {
-                                "name": "mode",
-                                "type": "String"
-                            },
-                            {
-                                "name": "max_file_size_mb",
-                                "type": "Number"
-                            },
-                            {
-                                "name": "default_thumb_size",
-                                "type": "Number"
                             }
                         ],
                         "output": []
@@ -78,7 +66,7 @@
                 "moduleName": "img_module",
                 "podType": "regular-s",
                 "runtime": {
-                    "runnerImage": "gcr.io/viewo-g/piper/agent/cpu/image-preprocess:6",
+                    "runnerImage": "gcr.io/viewo-g/piper/agent/runner/apps/image-preprocess:0.0.1",
                     "concurrency": 2,
                     "autoscaler": {
                         "type": "rabbitmq",
@@ -96,7 +84,7 @@
                 "moduleName": "tiff_module",
                 "podType": "regular-m",
                 "runtime": {
-                    "runnerImage": "gcr.io/viewo-g/piper/agent/runner/apps/tiff-converter:0.0.1",
+                    "runnerImage": "gcr.io/viewo-g/piper/agent/runner/apps/image-preprocess:0.0.1",
                     "concurrency": 10,
                     "autoscaler": {
                         "type": "rabbitmq",

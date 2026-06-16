@@ -53,58 +53,53 @@ def test_no_exif_image_png(mock_dl_item, mock_dl_progress):
 
 
 def test_non_image_mime(mock_dl_item, mock_dl_progress):
-    """Test 3: Non-image MIME — writes etl={failed:True} and updates item"""
+    """Test 3: Non-image MIME — raises and writes etl={failed:True}"""
+    import pytest
     item = mock_dl_item(mimetype="video/mp4")
-    
+
     runner = ServiceRunner()
-    result = runner.run(item, progress=mock_dl_progress)
-    
-    # Should return early without calling download
+    with pytest.raises(ValueError):
+        runner.run(item, progress=mock_dl_progress)
+
+    # Should not have attempted download
     assert not item.download.called
     # Should write ETL failure and update
     assert item.metadata["system"]["etl"]["failed"] is True
     assert len(item.metadata["system"]["etl"]["errors"]) == 1
     assert "Unsupported mimetype: video/mp4" in item.metadata["system"]["etl"]["errors"][0]["error"]
     assert item.update.called
+
+
+def test_both_extract_flags_false_skips(mock_dl_item, mock_dl_progress):
+    """Test 4: extract_metadata=False and extract_thumbnail=False -> skip"""
+    item = mock_dl_item(mimetype="image/jpeg")
+    context = MagicMock()
+    context.trigger_input = {"extract_metadata": False, "extract_thumbnail": False}
+
+    runner = ServiceRunner()
+    result = runner.run(item, context=context, progress=mock_dl_progress)
+
+    # Should return early without calling download
+    assert not item.download.called
     assert result is item
 
 
-def test_enable_image_preprocess_false(mock_dl_item, mock_dl_progress):
-    """Test 4: ENABLE_IMAGE_PREPROCESS=false"""
-    import os
-    with patch.dict(os.environ, {'ENABLE_IMAGE_PREPROCESS': 'false'}):
-        # Need to reload the module to pick up the env var
-        import importlib
-        import main
-        importlib.reload(main)
-        
-        item = mock_dl_item(mimetype="image/jpeg")
-        runner = main.ServiceRunner()
-        runner.run(item, progress=mock_dl_progress)
-    
-    # Should return early without calling download
-    assert not item.download.called
-    
-    # Restore module state for subsequent tests
-    importlib.reload(main)
-
-
-def test_metadata_only_mode_skips_thumbnail(mock_dl_item, mock_dl_progress):
-    """Test 5: mode='metadata-only' skips thumbnail generation"""
+def test_extract_thumbnail_false_skips_thumbnail(mock_dl_item, mock_dl_progress):
+    """Test 5: extract_thumbnail=False skips thumbnail generation"""
     img = Image.new("RGB", (800, 600))
     buf = BytesIO()
     img.save(buf, format="JPEG")
     buf.seek(0)
-    
+
     item = mock_dl_item(buffer=buf, mimetype="image/jpeg")
-    
+
     context = MagicMock()
-    context.trigger_input = {"mode": "metadata-only"}
-    
+    context.trigger_input = {"extract_thumbnail": False}
+
     runner = ServiceRunner()
     runner.run(item, context=context, progress=mock_dl_progress)
-    
-    # No thumbnail should be generated in metadata-only mode
+
+    # No thumbnail should be generated
     assert "thumbnailId" not in item.metadata["system"]
     # But dimensions should still be present
     assert item.metadata["system"]["width"] == 800
@@ -184,18 +179,19 @@ def test_both_fail(mock_dl_item, mock_dl_progress):
 
 
 def test_download_fails(mock_dl_item, mock_dl_progress):
-    """Test 9: Download fails — writes ETL error and returns"""
+    """Test 9: Download fails — raises, writes ETL error"""
+    import pytest
     item = mock_dl_item(mimetype="image/jpeg")
     item.download.side_effect = Exception("Download failed")
-    
+
     runner = ServiceRunner()
-    result = runner.run(item, progress=mock_dl_progress)
-    
+    with pytest.raises(Exception, match="Download failed"):
+        runner.run(item, progress=mock_dl_progress)
+
     etl = item.metadata["system"]["etl"]
     assert etl["failed"] is True
     assert any("Download failed" in e["error"] for e in etl["errors"])
     assert item.update.called
-    assert result is item
 
 
 def test_tiff_image(mock_dl_item, mock_dl_progress):
@@ -241,19 +237,20 @@ def test_orientation_raw_dimensions_preserved(mock_dl_item, mock_dl_progress):
 
 
 def test_file_too_large(mock_dl_item, mock_dl_progress):
-    """Test 12: File too large — writes ETL error and returns"""
+    """Test 12: File too large — raises, writes ETL error"""
+    import pytest
     item = mock_dl_item(mimetype="image/jpeg")
     item.metadata["system"]["size"] = 200 * 1024 * 1024  # 200MB
-    
+
     runner = ServiceRunner()
-    result = runner.run(item, progress=mock_dl_progress)
-    
+    with pytest.raises(ValueError, match="File too large"):
+        runner.run(item, progress=mock_dl_progress)
+
     assert not item.download.called
     etl = item.metadata["system"]["etl"]
     assert etl["failed"] is True
     assert any("File too large" in e["error"] for e in etl["errors"])
     assert item.update.called
-    assert result is item
 
 
 def test_gps_dual_storage(mock_dl_item, mock_dl_progress):
@@ -296,45 +293,42 @@ def test_gps_dual_storage(mock_dl_item, mock_dl_progress):
 
 
 def test_default_thumb_size_override(mock_dl_item, mock_dl_progress):
-    """Test 14: DEFAULT_THUMB_SIZE override — passes correct size to thumbnail"""
-    import os
-    with patch.dict(os.environ, {'DEFAULT_THUMB_SIZE': '256'}):
-        import importlib
-        import main
-        importlib.reload(main)
-        
-        img = Image.new("RGB", (4032, 3024))
-        buf = BytesIO()
-        img.save(buf, format="JPEG")
-        buf.seek(0)
-        
-        item = mock_dl_item(buffer=buf, mimetype="image/jpeg")
-        
-        with patch.object(main.ServiceRunner, 'create_and_upload_thumbnail') as mock_thumb:
-            runner = main.ServiceRunner()
-            runner.run(item, progress=mock_dl_progress)
-        
-        # Verify create_and_upload_thumbnail was called with max_edge=256
-        mock_thumb.assert_called_once()
-        assert mock_thumb.call_args[0][2] == 256
+    """Test 14: default_thumb_size from trigger_input is forwarded to thumbnail"""
+    img = Image.new("RGB", (4032, 3024))
+    buf = BytesIO()
+    img.save(buf, format="JPEG")
+    buf.seek(0)
+
+    item = mock_dl_item(buffer=buf, mimetype="image/jpeg")
+
+    context = MagicMock()
+    context.trigger_input = {"default_thumb_size": 256}
+
+    with patch.object(ServiceRunner, 'create_and_upload_thumbnail') as mock_thumb:
+        runner = ServiceRunner()
+        runner.run(item, context=context, progress=mock_dl_progress)
+
+    mock_thumb.assert_called_once()
+    assert mock_thumb.call_args[0][2] == 256
 
 
 def test_corrupt_image(mock_dl_item, mock_dl_progress):
-    """Test: Corrupt image — etl.failed=True with error message"""
+    """Test: Corrupt image — raises, etl.failed=True with error message"""
+    import pytest
     corrupt_buf = BytesIO(b"not a real image at all")
-    
+
     item = mock_dl_item(buffer=corrupt_buf, mimetype="image/jpeg")
-    
+
     runner = ServiceRunner()
-    result = runner.run(item, progress=mock_dl_progress)
-    
+    with pytest.raises(Exception):
+        runner.run(item, progress=mock_dl_progress)
+
     # Should write ETL hard failure
     etl = item.metadata["system"]["etl"]
     assert etl["failed"] is True
     assert len(etl["errors"]) == 1
-    assert "Image metadata extraction failed" in etl["errors"][0]["error"]
+    assert "Failed to download/open image" in etl["errors"][0]["error"]
     assert item.update.called
-    assert result is item
 
 
 def test_happy_path_no_etl(mock_dl_item, mock_dl_progress):

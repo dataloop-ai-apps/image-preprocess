@@ -17,10 +17,9 @@ from common.etl_errors import record_etl_error
 
 logger = logging.getLogger("image-preprocess")
 
-ENABLE_IMAGE_PREPROCESS = os.getenv("ENABLE_IMAGE_PREPROCESS", "true").lower() == "true"
-MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "100"))
-DEFAULT_THUMB_SIZE = int(os.getenv("DEFAULT_THUMB_SIZE", "128"))
-DEFAULT_MODE = os.getenv("DEFAULT_MODE", "full")
+# Defaults; override per-invocation via context.trigger_input.
+MAX_FILE_SIZE_MB = 100
+DEFAULT_THUMB_SIZE = 128
 
 
 class ServiceRunner(dl.BaseServiceRunner):
@@ -33,26 +32,31 @@ class ServiceRunner(dl.BaseServiceRunner):
 
     def run(self, item: dl.Item, context=None, progress=None):
         """Process an image item: extract metadata and generate thumbnail.
-        
-        Processing mode is controlled via context.trigger_input:
-            mode – "full" | "metadata-only" | "thumbnail-only" (default: "full")
+
+        Behaviour is controlled via ``context.trigger_input``:
+            extract_metadata   – bool (default True)
+            extract_thumbnail  – bool (default True)
+            max_file_size_mb   – int  (default MAX_FILE_SIZE_MB)
+            default_thumb_size – int  (default DEFAULT_THUMB_SIZE)
+        If both extract flags are False, processing is skipped.
         """
-        
-        # Resolve config from trigger input, fallback to env defaults
+
         trigger_input = {}
         if context is not None and hasattr(context, 'trigger_input'):
             trigger_input = context.trigger_input or {}
-        
-        mode = trigger_input.get('mode', DEFAULT_MODE)
+
+        extract_metadata = bool(trigger_input.get('extract_metadata', True))
+        extract_thumbnail = bool(trigger_input.get('extract_thumbnail', True))
         max_file_size_mb = int(trigger_input.get('max_file_size_mb', MAX_FILE_SIZE_MB))
         default_thumb_size = int(trigger_input.get('default_thumb_size', DEFAULT_THUMB_SIZE))
-        logger.info(f"Processing mode: {mode}")
-        
-        if not ENABLE_IMAGE_PREPROCESS:
-            logger.info("Image preprocessing disabled via ENABLE_IMAGE_PREPROCESS")
+        logger.info(
+            f"Config: extract_metadata={extract_metadata} extract_thumbnail={extract_thumbnail}"
+        )
+
+        if not extract_metadata and not extract_thumbnail:
+            logger.info("Both extract_metadata and extract_thumbnail are False; skipping")
             return item
 
-        buffer = None
         try:
             # Clear stale ETL from previous runs
             item.metadata.setdefault("system", {}).pop("etl", None)
@@ -60,71 +64,59 @@ class ServiceRunner(dl.BaseServiceRunner):
             # Reject non-image items
             mimetype = item.metadata.get("system", {}).get("mimetype", "")
             if not mimetype.startswith("image/"):
-                logger.info(f"Skipping non-image item: {mimetype}")
-                record_etl_error(item, stage="validation", error=f"Unsupported mimetype: {mimetype}", failed=True)
-                return item
+                msg = f"Unsupported mimetype: {mimetype}"
+                logger.error(msg)
+                record_etl_error(item, stage="validation", error=msg, failed=True)
+                raise ValueError(msg)
 
             # Reject files exceeding size limit
             file_size = item.metadata.get("system", {}).get("size", 0)
             if file_size > max_file_size_mb * 1024 * 1024:
-                logger.error(f"File too large: {file_size} bytes > {max_file_size_mb}MB")
-                record_etl_error(
-                    item,
-                    stage="validation",
-                    error=f"File too large: {file_size} bytes exceeds {max_file_size_mb}MB limit",
-                    failed=True,
-                )
-                return item
+                msg = f"File too large: {file_size} bytes exceeds {max_file_size_mb}MB limit"
+                logger.error(msg)
+                record_etl_error(item, stage="validation", error=msg, failed=True)
+                raise ValueError(msg)
 
-            # Download item binary content
+            # Download item and open image (single hard-failure path)
             try:
                 buffer = item.download(save_locally=False)
                 if not isinstance(buffer, BytesIO):
                     buffer = BytesIO(buffer)
-            except Exception as e:
-                logger.exception(f"Failed to download item {item.id}")
-                record_etl_error(item, stage="download", error=f"Download failed: {e}", failed=True)
-                return item
-
-            # Open image and write dimensions to metadata
-            try:
                 buffer.seek(0)
                 img = Image.open(buffer)
                 img.load()
             except Exception as e:
-                logger.exception(f"Failed to open/read image for item {item.id}")
+                logger.exception(f"Failed to download/open image from item {item.id}")
                 record_etl_error(
                     item,
-                    stage="image_open",
-                    error=f"Image metadata extraction failed: {e}",
+                    stage="download_open",
+                    error=f"Failed to download/open image from item: {e}",
                     failed=True,
                 )
-                return item
+                raise
 
-            self.set_image_dimensions(item, img)
+            with buffer, img:
+                self.set_image_dimensions(item, img)
 
-            # Extract EXIF and GPS, each writes directly to item.metadata
-            if mode in ('full', 'metadata-only'):
-                try:
-                    self.extract_exif(img, item)
-                except Exception as e:
-                    logger.exception(f"Failed to extract EXIF for item {item.id}")
-                    record_etl_error(item, stage="exif", error=f"Exif extraction failed: {e}")
+                if extract_metadata:
+                    try:
+                        self.extract_exif(img, item)
+                    except Exception as e:
+                        logger.exception(f"Failed to extract EXIF for item {item.id}")
+                        record_etl_error(item, stage="exif", error=f"Exif extraction failed: {e}")
 
-            # WARNING: thumbnail generation mutates img (resize in-place).
-            # This MUST remain the last step that uses img.
-            if mode in ('full', 'thumbnail-only'):
-                try:
-                    self.create_and_upload_thumbnail(img, item, default_thumb_size)
-                except Exception as e:
-                    logger.exception(f"Failed to generate thumbnail for item {item.id}")
-                    record_etl_error(item, stage="thumbnail", error=f"Thumbnail generation failed: {e}")
-
-            return item
+                # WARNING: thumbnail generation mutates img (resize in-place).
+                # This MUST remain the last step that uses img.
+                if extract_thumbnail:
+                    try:
+                        self.create_and_upload_thumbnail(img, item, default_thumb_size)
+                    except Exception as e:
+                        logger.exception(f"Failed to generate thumbnail for item {item.id}")
+                        record_etl_error(item, stage="thumbnail", error=f"Thumbnail generation failed: {e}")
         finally:
-            if buffer is not None:
-                buffer.close()
             item = item.update(system_metadata=True)
+
+        return item
 
     # ------------------------------------------------------------------
     # Metadata extraction
@@ -205,22 +197,13 @@ class ServiceRunner(dl.BaseServiceRunner):
 
         Sets camelCase keys on item.metadata["system"]["exif"].
         Does nothing if no EXIF data exists.
-        Non-fatal errors are recorded via ``record_etl_error``.
+        Caller is expected to wrap this in a try/except for non-fatal handling.
         """
-        try:
-            exif = img.getexif()
-            if not exif:
-                return
-        except Exception as e:
-            logger.warning(f"Failed to get EXIF data: {e}")
-            record_etl_error(item, stage="exif", error=f"Exif extraction failed: {e}")
+        exif = img.getexif()
+        if not exif:
             return
-        
-        try:
-            exif_ifd = exif.get_ifd(IFD.Exif)
-        except Exception as e:
-            logger.warning(f"Failed to get ExifIFD: {e}")
-            exif_ifd = {}
+
+        exif_ifd = exif.get_ifd(IFD.Exif)
 
         # (result_key, source, exif_tag, transform)
         fields = [
@@ -268,36 +251,31 @@ class ServiceRunner(dl.BaseServiceRunner):
 
         Sets item.metadata["system"]["location"] and item.metadata["user"]["location"].
         Does nothing if GPS data is absent or incomplete (both lat+lon required).
-        Non-fatal errors are recorded via ``record_etl_error``.
+        Caller is expected to wrap this in a try/except for non-fatal handling.
         """
-        try:
-            gps_ifd = exif.get_ifd(IFD.GPSInfo)
-            if not gps_ifd:
-                return
-
-            lat_ref, lat = gps_ifd.get(GPS.GPSLatitudeRef), gps_ifd.get(GPS.GPSLatitude)
-            lon_ref, lon = gps_ifd.get(GPS.GPSLongitudeRef), gps_ifd.get(GPS.GPSLongitude)
-            if lat is None or lat_ref is None or lon is None or lon_ref is None:
-                return
-
-            result = {
-                "latitude": self._dms_to_decimal(lat, lat_ref, "S"),
-                "longitude": self._dms_to_decimal(lon, lon_ref, "W"),
-            }
-
-            altitude = gps_ifd.get(GPS.GPSAltitude)
-            if altitude is not None:
-                alt_value = self._ratio(altitude)
-                alt_ref = gps_ifd.get(GPS.GPSAltitudeRef)
-                if alt_ref is not None:
-                    alt_ref_int = int.from_bytes(alt_ref, "big") if isinstance(alt_ref, bytes) else int(alt_ref)
-                    if alt_ref_int == 1:
-                        alt_value = -alt_value
-                result["altitude"] = alt_value
-        except Exception as e:
-            record_etl_error(item, stage="gps", error=f"GPS extraction failed: {e}")
-            logger.warning(f"Failed to extract GPS: {e}")
+        gps_ifd = exif.get_ifd(IFD.GPSInfo)
+        if not gps_ifd:
             return
+
+        lat_ref, lat = gps_ifd.get(GPS.GPSLatitudeRef), gps_ifd.get(GPS.GPSLatitude)
+        lon_ref, lon = gps_ifd.get(GPS.GPSLongitudeRef), gps_ifd.get(GPS.GPSLongitude)
+        if lat is None or lat_ref is None or lon is None or lon_ref is None:
+            return
+
+        result = {
+            "latitude": self._dms_to_decimal(lat, lat_ref, "S"),
+            "longitude": self._dms_to_decimal(lon, lon_ref, "W"),
+        }
+
+        altitude = gps_ifd.get(GPS.GPSAltitude)
+        if altitude is not None:
+            alt_value = self._ratio(altitude)
+            alt_ref = gps_ifd.get(GPS.GPSAltitudeRef)
+            if alt_ref is not None:
+                alt_ref_int = int.from_bytes(alt_ref, "big") if isinstance(alt_ref, bytes) else int(alt_ref)
+                if alt_ref_int == 1:
+                    alt_value = -alt_value
+            result["altitude"] = alt_value
 
         location = self.build_location(result)
         item.metadata.setdefault("system", {})["location"] = location
@@ -310,18 +288,11 @@ class ServiceRunner(dl.BaseServiceRunner):
     @staticmethod
     def auto_rotate(img: Image.Image, item) -> Image.Image:
         """Apply EXIF orientation and return a new correctly-oriented image.
-        If no orientation tag or error, returns the image unchanged (copy).
-        Non-fatal errors are recorded via ``record_etl_error``.
+        If no orientation tag, returns the image unchanged.
+        Caller is expected to wrap this in a try/except for non-fatal handling.
         """
-        try:
-            rotated = ImageOps.exif_transpose(img)
-            if rotated is not None:
-                return rotated
-        except Exception as e:
-            logger.warning(f"Failed to auto-rotate image: {e}")
-            record_etl_error(item, stage="thumbnail", error=f"Auto-rotate failed: {e}")
-
-        return img
+        rotated = ImageOps.exif_transpose(img)
+        return rotated or img # if rotated is None, return the original image
 
     @staticmethod
     def generate_thumbnail(img: Image.Image, max_edge: int = 512) -> BytesIO:

@@ -35,13 +35,10 @@ EXIF_TAG = {
     'Orientation': 274,          # 0x0112
 }
 
-# Thumbnail / processing configuration
-DEFAULT_THUMB_SIZE = int(os.environ.get('DEFAULT_THUMB_SIZE', '128'))
-# DEFAULT_MODE: 'full' | 'metadata-only' | 'thumbnail-only'
-DEFAULT_MODE = os.environ.get('DEFAULT_MODE', 'full').lower()
-
+# Defaults; override per-invocation via context.trigger_input.
+DEFAULT_THUMB_SIZE = 128
 # Max input TIFF file size (MB). Larger than typical images since TIFFs can be big.
-MAX_FILE_SIZE_MB = int(os.environ.get('TIFF_MAX_FILE_SIZE_MB', '2000'))
+MAX_FILE_SIZE_MB = 2000
 
 # GDAL dtype mapping: numpy dtype string -> (gdal_type_code, gdal_type_name)
 GDAL_DTYPE_MAP = {
@@ -57,11 +54,11 @@ GDAL_DTYPE_MAP = {
     'complex128': (11, 'CFloat64'),
 }
 
-# Projects to skip (comma-separated UUIDs)
-SKIP_PROJECTS = set(os.environ.get('TIFF_SKIP_PROJECTS', '').split(','))
+# Projects to skip (project UUIDs)
+SKIP_PROJECTS: set[str] = set()
 
 # Dataset-level metadata flag name to check for skipping
-SKIP_DATASET_FLAG = os.environ.get('TIFF_SKIP_DATASET_FLAG', 'skipTiffConversion')
+SKIP_DATASET_FLAG = 'skipTiffConversion'
 
 
 class ServiceRunner(dl.BaseServiceRunner):
@@ -79,12 +76,13 @@ class ServiceRunner(dl.BaseServiceRunner):
         self.tiff_meta: dict = {}
         self.shape: tuple | None = None
         self.dims: dict | None = None
-        self.mode: str = DEFAULT_MODE
+        self.extract_metadata: bool = True
+        self.extract_thumbnail: bool = True
         self.max_file_size_mb: int = MAX_FILE_SIZE_MB
         self.default_thumb_size: int = DEFAULT_THUMB_SIZE
         logger.info(
-            'ServiceRunner initialized: thumb_size=%d, mode=%s, max_file_size_mb=%d',
-            DEFAULT_THUMB_SIZE, DEFAULT_MODE, MAX_FILE_SIZE_MB,
+            'ServiceRunner initialized: thumb_size=%d, max_file_size_mb=%d',
+            DEFAULT_THUMB_SIZE, MAX_FILE_SIZE_MB,
         )
 
 
@@ -93,22 +91,34 @@ class ServiceRunner(dl.BaseServiceRunner):
     # ------------------------------------------------------------------
 
     def run(self, item: dl.Item, context=None, progress: dl.Progress | None = None) -> None:
+        """Process a TIFF item.
+
+        Behaviour is controlled via ``context.trigger_input``:
+            extract_metadata   – bool (default True)
+            extract_thumbnail  – bool (default True)
+            max_file_size_mb   – int  (default MAX_FILE_SIZE_MB)
+            default_thumb_size – int  (default DEFAULT_THUMB_SIZE)
+        If both extract flags are False, processing is skipped.
+        """
         if self._should_skip(item):
             return
 
-        # Resolve config from trigger input, fallback to env defaults
         trigger_input = {}
         if context is not None and hasattr(context, 'trigger_input'):
             trigger_input = context.trigger_input or {}
 
-        self.mode = str(trigger_input.get('mode', DEFAULT_MODE)).lower()
+        self.extract_metadata = bool(trigger_input.get('extract_metadata', True))
+        self.extract_thumbnail = bool(trigger_input.get('extract_thumbnail', True))
         self.max_file_size_mb = int(trigger_input.get('max_file_size_mb', MAX_FILE_SIZE_MB))
         self.default_thumb_size = int(trigger_input.get('default_thumb_size', DEFAULT_THUMB_SIZE))
-        logger.info('Processing config: mode=%s max_file_size_mb=%d default_thumb_size=%d',
-                    self.mode, self.max_file_size_mb, self.default_thumb_size)
+        logger.info(
+            'Processing config: extract_metadata=%s extract_thumbnail=%s max_file_size_mb=%d default_thumb_size=%d',
+            self.extract_metadata, self.extract_thumbnail, self.max_file_size_mb, self.default_thumb_size,
+        )
 
-        do_metadata = self.mode in ('full', 'metadata-only')
-        do_thumbnail = self.mode in ('full', 'thumbnail-only')
+        if not self.extract_metadata and not self.extract_thumbnail:
+            logger.info('Both extract_metadata and extract_thumbnail are False; skipping')
+            return
 
         # Ensure the etl error sink exists; all helpers call record_etl_error directly.
         item.metadata.setdefault('system', {}).setdefault('etl', {}).setdefault('errors', [])
@@ -128,10 +138,10 @@ class ServiceRunner(dl.BaseServiceRunner):
                 msg = 'File too large: {} bytes exceeds {}MB limit'.format(file_size, self.max_file_size_mb)
                 logger.error(msg)
                 record_etl_error(item, 'size_check', msg, failed=True)
-                return
+                raise ValueError(msg)
 
             self._download_item(item)
-            self._probe_tiff(item)
+            self._inspect_tiff_header(item)
 
             png_item = self._build_and_upload_png(item)
             self._create_replace_modality(item, png_item)
@@ -144,32 +154,21 @@ class ServiceRunner(dl.BaseServiceRunner):
             )
             self._apply_legacy_metadata(item)
 
-            if do_thumbnail:
-                self.generate_thumbnail(item, self.png_image, self.default_thumb_size)
+            if self.extract_thumbnail:
+                try:
+                    self.generate_thumbnail(item, self.png_image, self.default_thumb_size)
+                except Exception as e:
+                    logger.exception('Thumbnail generation failed for item=%s', item.id)
+                    record_etl_error(item, 'thumbnail', f'Thumbnail generation failed: {e}')
 
-            exif_payload = self.exif_data if do_metadata else {'exif': {}, 'location': {}}
-            item.metadata['system']['etl']['failed'] = False
-            self._apply_image_etl_metadata(item, exif_payload, etl_failed=False)
+            self._apply_image_etl_metadata(item, self.exif_data)
             logger.info(
-                'TIFF conversion complete: item=%s errors=%d mode=%s',
-                item.id, len(item.metadata['system']['etl']['errors']), self.mode,
-            )
-
-        except Exception as e:
-            logger.exception(
-                'TIFF conversion failed: item=%s name=%s error_type=%s',
-                item.id, item.name, type(e).__name__,
-            )
-            record_etl_error(
-                item, 'conversion', str(e), failed=True,
-                traceback=traceback.format_exc(),
+                'TIFF conversion complete: item=%s errors=%d',
+                item.id, len(item.metadata['system']['etl']['errors']),
             )
 
         finally:
-            try:
-                item.update(system_metadata=True)
-            except Exception:
-                logger.exception('Failed to flush system metadata item=%s', item.id)
+            item.update(system_metadata=True)
             self._cleanup_files(self.tiff_filepath)
 
     # ------------------------------------------------------------------
@@ -184,7 +183,7 @@ class ServiceRunner(dl.BaseServiceRunner):
         logger.info('Downloaded TIFF: item=%s name=%s path=%s size=%.2fMB',
                     item.id, item.name, self.tiff_filepath, size_mb)
 
-    def _probe_tiff(self, item: dl.Item) -> None:
+    def _inspect_tiff_header(self, item: dl.Item) -> None:
         """PIL-open the TIFF (lazy, header-only) and probe bit depth + EXIF.
 
         ``Image.open`` only reads the header — pixel data stays on disk until
@@ -210,7 +209,8 @@ class ServiceRunner(dl.BaseServiceRunner):
                      self.pil_image.mode, self.pil_image.size, self.pil_image.format)
         exifdata = self.read_exif_tags(item, self.pil_image)
         self.is_multibit = self._get_bits_per_sample(item, exifdata)
-        self.exif_data = self.extract_exif(item, exifdata)
+        if self.extract_metadata:
+            self.exif_data = self.extract_exif(item, exifdata)
 
 
     def _build_and_upload_png(self, item: dl.Item) -> dl.Item:
@@ -259,6 +259,8 @@ class ServiceRunner(dl.BaseServiceRunner):
 
     def _apply_legacy_metadata(self, item: dl.Item) -> None:
         """Write legacy (top-level) system metadata fields for backward compat."""
+        if self.extract_metadata is False:
+            return
         if 'system' not in item.metadata:
             item.metadata['system'] = {}
         item.metadata['system']['tiff'] = {
@@ -271,24 +273,22 @@ class ServiceRunner(dl.BaseServiceRunner):
         logger.info('Legacy metadata: width=%s height=%s channels=%s',
                     self.dims['width'], self.dims['height'], self.dims['channels'])
 
-    def _apply_image_etl_metadata(self, item, exif_data, etl_failed: bool) -> None:
-        """Write the Rubiks-aligned `imageEtl` block.
+    def _apply_image_etl_metadata(self, item, exif_data) -> None:
+        """Update the Rubiks-aligned `imageEtl` block without overriding existing keys.
 
-        Reads the current error list from ``item.metadata`` so callers don't
-        have to pass it explicitly — it's maintained by ``record_etl_error``.
+        Merges width/height/channels/exif/location into any existing
+        ``imageEtl`` block (e.g. an ``etl`` sub-block populated elsewhere).
         """
-        etl_errors = item.metadata.get('system', {}).get('etl', {}).get('errors', [])
-        item.metadata['system']['imageEtl'] = {
+        if self.extract_metadata is False:
+            return
+        image_etl = item.metadata['system'].setdefault('imageEtl', {})
+        image_etl.update({
             'width': self.dims['width'],
             'height': self.dims['height'],
             'channels': self.dims['channels'],
             'exif': exif_data.get('exif', {}),
             'location': exif_data.get('location', {}),
-            'etl': {
-                'failed': etl_failed,
-                'errors': etl_errors,
-            },
-        }
+        })
 
 
     # ------------------------------------------------------------------
@@ -318,22 +318,21 @@ class ServiceRunner(dl.BaseServiceRunner):
     # ------------------------------------------------------------------
 
     def _get_bits_per_sample(self, item: dl.Item, exifdata) -> bool:
-        """Return True if multi-bit (needs geoio), False if 1-bit (PIL-only path)."""
+        """Return True if multi-bit (needs geoio), False if 1-bit (PIL-only path).
+
+        Caller is expected to wrap this in a try/except for non-fatal handling.
+        """
         if exifdata is None:
             return True
-        try:
-            bits = exifdata.get(EXIF_TAG['BitsPerSample'])
-            logger.debug('BitsPerSample = %s (type=%s)', bits, type(bits).__name__)
-            if bits is not None:
-                if isinstance(bits, tuple):
-                    bits = bits[0]
-                if int(bits) == 1:
-                    logger.info('1-bit TIFF detected, using PIL conversion path')
-                    return False
-            logger.debug('Multi-bit path selected (bits=%s)', bits)
-        except Exception as e:
-            logger.warning('BitsPerSample extraction failed: %s', e)
-            record_etl_error(item, 'exif_bits', str(e))
+        bits = exifdata.get(EXIF_TAG['BitsPerSample'])
+        logger.debug('BitsPerSample = %s (type=%s)', bits, type(bits).__name__)
+        if bits is not None:
+            if isinstance(bits, tuple):
+                bits = bits[0]
+            if int(bits) == 1:
+                logger.info('1-bit TIFF detected, using PIL conversion path')
+                return False
+        logger.debug('Multi-bit path selected (bits=%s)', bits)
         # Default to multi-bit (geoio path) — safer fallback
         return True
 
@@ -599,76 +598,74 @@ class ServiceRunner(dl.BaseServiceRunner):
 
     @staticmethod
     def read_exif_tags(item: dl.Item, pil_image: 'Image.Image'):
-        """Read raw EXIF tags from a PIL image, returning None on failure."""
-        try:
-            return pil_image.getexif()
-        except Exception as e:
-            logger.warning('EXIF read failed: %s', e)
-            record_etl_error(item, 'exif_read', str(e))
-            return None
+        """Read raw EXIF tags from a PIL image.
+
+        Caller is expected to wrap this in a try/except for non-fatal handling.
+        """
+        return pil_image.getexif()
 
     @staticmethod
     def extract_exif(item: dl.Item, exifdata) -> dict:
-        """Extract EXIF metadata and GPS coordinates matching Rubiks field names."""
+        """Extract EXIF metadata and GPS coordinates matching Rubiks field names.
+
+        Caller is expected to wrap this in a try/except for non-fatal handling.
+        """
         result = {'exif': {}, 'location': {}}
         if not exifdata:
             return result
-        try:
-            tag_map = {
-                'DateTimeOriginal': EXIF_TAG['DateTimeOriginal'],
-                'Model':             EXIF_TAG['Model'],
-                'ExposureTime':      EXIF_TAG['ExposureTime'],
-                'FNumber':           EXIF_TAG['FNumber'],
-                'ISO':               EXIF_TAG['ISO'],
-                'WhiteBalance':      EXIF_TAG['WhiteBalance'],
-                'Orientation':       EXIF_TAG['Orientation'],
-            }
 
-            for name, tag_id in tag_map.items():
-                value = exifdata.get(tag_id)
-                if value is not None:
-                    if name == 'DateTimeOriginal' and isinstance(value, str):
-                        try:
-                            dt = datetime.datetime.strptime(value, '%Y:%m:%d %H:%M:%S')
-                            value = dt.isoformat() + 'Z'
-                        except (ValueError, TypeError):
-                            pass
-                    result['exif'][name] = value
+        tag_map = {
+            'DateTimeOriginal': EXIF_TAG['DateTimeOriginal'],
+            'Model':             EXIF_TAG['Model'],
+            'ExposureTime':      EXIF_TAG['ExposureTime'],
+            'FNumber':           EXIF_TAG['FNumber'],
+            'ISO':               EXIF_TAG['ISO'],
+            'WhiteBalance':      EXIF_TAG['WhiteBalance'],
+            'Orientation':       EXIF_TAG['Orientation'],
+        }
 
-            gps_ifd = exifdata.get_ifd(EXIF_TAG['GPSInfoIFD'])
-            if gps_ifd:
-                lat = ServiceRunner.parse_gps_coord(item, gps_ifd, 1, 2)
-                lon = ServiceRunner.parse_gps_coord(item, gps_ifd, 3, 4)
-                alt = gps_ifd.get(6)
-                if lat is not None:
-                    result['location']['latitude'] = lat
-                if lon is not None:
-                    result['location']['longitude'] = lon
-                if alt is not None:
-                    result['location']['altitude'] = float(alt)
-        except Exception as e:
-            logger.warning('EXIF extraction failed', exc_info=True)
-            record_etl_error(item, 'exif', str(e))
+        for name, tag_id in tag_map.items():
+            value = exifdata.get(tag_id)
+            if value is not None:
+                if name == 'DateTimeOriginal' and isinstance(value, str):
+                    try:
+                        dt = datetime.datetime.strptime(value, '%Y:%m:%d %H:%M:%S')
+                        value = dt.isoformat() + 'Z'
+                    except (ValueError, TypeError):
+                        pass
+                result['exif'][name] = value
+
+        gps_ifd = exifdata.get_ifd(EXIF_TAG['GPSInfoIFD'])
+        if gps_ifd:
+            lat = ServiceRunner.parse_gps_coord(item, gps_ifd, 1, 2)
+            lon = ServiceRunner.parse_gps_coord(item, gps_ifd, 3, 4)
+            alt = gps_ifd.get(6)
+            if lat is not None:
+                result['location']['latitude'] = lat
+            if lon is not None:
+                result['location']['longitude'] = lon
+            if alt is not None:
+                result['location']['altitude'] = float(alt)
 
         return result
 
     @staticmethod
     def parse_gps_coord(item: dl.Item, gps_ifd: dict, ref_tag: int,
                          coord_tag: int) -> float | None:
-        """Convert GPS DMS (degrees/minutes/seconds) + N/S/E/W reference to decimal degrees."""
-        try:
-            ref = gps_ifd.get(ref_tag)
-            coord = gps_ifd.get(coord_tag)
-            if ref and coord and len(coord) == 3:
-                degrees = float(coord[0])
-                minutes = float(coord[1])
-                seconds = float(coord[2])
-                value = degrees + minutes / 60.0 + seconds / 3600.0
-                if ref in ('S', 'W'):
-                    value = -value
-                return value
-        except (TypeError, ValueError, IndexError) as e:
-            record_etl_error(item, 'gps_coord', str(e))
+        """Convert GPS DMS (degrees/minutes/seconds) + N/S/E/W reference to decimal degrees.
+
+        Caller is expected to wrap this in a try/except for non-fatal handling.
+        """
+        ref = gps_ifd.get(ref_tag)
+        coord = gps_ifd.get(coord_tag)
+        if ref and coord and len(coord) == 3:
+            degrees = float(coord[0])
+            minutes = float(coord[1])
+            seconds = float(coord[2])
+            value = degrees + minutes / 60.0 + seconds / 3600.0
+            if ref in ('S', 'W'):
+                value = -value
+            return value
         return None
 
     @staticmethod
@@ -692,27 +689,23 @@ class ServiceRunner(dl.BaseServiceRunner):
     # Thumbnail generation
     # ------------------------------------------------------------------
 
-    def generate_thumbnail(self, item: dl.Item, png_image: Image.Image, default_thumb_size: int) -> tuple[bool, str | None]:
+    def generate_thumbnail(self, item: dl.Item, png_image: Image.Image, default_thumb_size: int) -> None:
         """Generate and upload a thumbnail from the in-memory converted PNG.
 
         Uses the PNG image and uploads the resized image directly from a BytesIO buffer.
         Mutates ``item.metadata`` in place when successful.
+        Caller is expected to wrap this in a try/except for non-fatal handling.
         """
-        try:
-            buf = self.make_thumbnail_buffer(png_image, default_thumb_size)
-            thumbnail_item = item.dataset.items.upload(
-                local_path=buf,
-                remote_path='/.dataloop/thumbnails',
-                remote_name='{}.png'.format(item.id),
-                overwrite=True,
-                item_metadata={'system': {'originItemId': item.id}},
-            )
-            item.metadata.setdefault('system', {})['thumbnailId'] = thumbnail_item.id
-            logger.info('Thumbnail uploaded: item=%s thumb_id=%s', item.id, thumbnail_item.id)
-
-        except Exception:
-            logger.exception('Thumbnail generation failed for item=%s', item.id)
-            record_etl_error(item, 'thumbnail', 'Thumbnail generation failed')
+        buf = self.make_thumbnail_buffer(png_image, default_thumb_size)
+        thumbnail_item = item.dataset.items.upload(
+            local_path=buf,
+            remote_path='/.dataloop/thumbnails',
+            remote_name='{}.png'.format(item.id),
+            overwrite=True,
+            item_metadata={'system': {'originItemId': item.id}},
+        )
+        item.metadata.setdefault('system', {})['thumbnailId'] = thumbnail_item.id
+        logger.info('Thumbnail uploaded: item=%s thumb_id=%s', item.id, thumbnail_item.id)
 
     @staticmethod
     def make_thumbnail_buffer(pil_image: Image.Image, default_thumb_size: int) -> BytesIO:
