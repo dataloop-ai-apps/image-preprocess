@@ -1,6 +1,10 @@
 from PIL import Image
 
-from metadata_extractor import map_exif_keys, build_location, set_image_dimensions
+from main import ServiceRunner
+
+map_exif_keys = ServiceRunner.map_exif_keys
+build_location = ServiceRunner.build_location
+set_image_dimensions = ServiceRunner.set_image_dimensions
 
 
 def test_full_exif_key_mapping():

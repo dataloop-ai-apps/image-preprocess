@@ -19,7 +19,7 @@ def test_happy_path_full_exif_jpeg(mock_dl_item, mock_dl_progress):
     
     item = mock_dl_item(buffer=buf, mimetype="image/jpeg")
     
-    with patch('main.create_and_upload_thumbnail') as mock_thumb:
+    with patch.object(ServiceRunner, 'create_and_upload_thumbnail') as mock_thumb:
         mock_thumb.side_effect = lambda img, it, sz: it.metadata.setdefault("system", {}).__setitem__("thumbnailId", "thumb-123")
         runner = ServiceRunner()
         runner.run(item, progress=mock_dl_progress)
@@ -40,7 +40,7 @@ def test_no_exif_image_png(mock_dl_item, mock_dl_progress):
     
     item = mock_dl_item(buffer=buf, mimetype="image/png")
     
-    with patch('main.create_and_upload_thumbnail'):
+    with patch.object(ServiceRunner, 'create_and_upload_thumbnail'):
         runner = ServiceRunner()
         runner.run(item, progress=mock_dl_progress)
     
@@ -120,8 +120,8 @@ def test_exif_extraction_fails(mock_dl_item, mock_dl_progress):
     
     item = mock_dl_item(buffer=buf, mimetype="image/jpeg")
     
-    with patch('main.extract_exif', side_effect=Exception("EXIF failed")):
-        with patch('main.create_and_upload_thumbnail') as mock_thumb:
+    with patch.object(ServiceRunner, 'extract_exif', side_effect=Exception("EXIF failed")):
+        with patch.object(ServiceRunner, 'create_and_upload_thumbnail') as mock_thumb:
             mock_thumb.side_effect = lambda img, it, sz: it.metadata.setdefault("system", {}).__setitem__("thumbnailId", "thumb-123")
             runner = ServiceRunner()
             runner.run(item, progress=mock_dl_progress)
@@ -147,7 +147,7 @@ def test_thumbnail_gen_fails(mock_dl_item, mock_dl_progress):
     
     item = mock_dl_item(buffer=buf, mimetype="image/jpeg")
     
-    with patch('main.create_and_upload_thumbnail', side_effect=Exception("Thumbnail failed")):
+    with patch.object(ServiceRunner, 'create_and_upload_thumbnail', side_effect=Exception("Thumbnail failed")):
         runner = ServiceRunner()
         runner.run(item, progress=mock_dl_progress)
     
@@ -170,8 +170,8 @@ def test_both_fail(mock_dl_item, mock_dl_progress):
     
     item = mock_dl_item(buffer=buf, mimetype="image/jpeg")
     
-    with patch('main.extract_exif', side_effect=Exception("EXIF failed")):
-        with patch('main.create_and_upload_thumbnail', side_effect=Exception("Thumbnail failed")):
+    with patch.object(ServiceRunner, 'extract_exif', side_effect=Exception("EXIF failed")):
+        with patch.object(ServiceRunner, 'create_and_upload_thumbnail', side_effect=Exception("Thumbnail failed")):
             runner = ServiceRunner()
             runner.run(item, progress=mock_dl_progress)
     
@@ -207,7 +207,7 @@ def test_tiff_image(mock_dl_item, mock_dl_progress):
     
     item = mock_dl_item(buffer=buf, mimetype="image/tiff")
     
-    with patch('main.create_and_upload_thumbnail'):
+    with patch.object(ServiceRunner, 'create_and_upload_thumbnail'):
         runner = ServiceRunner()
         runner.run(item, progress=mock_dl_progress)
     
@@ -231,7 +231,7 @@ def test_orientation_raw_dimensions_preserved(mock_dl_item, mock_dl_progress):
     
     item = mock_dl_item(buffer=buf, mimetype="image/jpeg")
     
-    with patch('main.create_and_upload_thumbnail'):
+    with patch.object(ServiceRunner, 'create_and_upload_thumbnail'):
         runner = ServiceRunner()
         runner.run(item, progress=mock_dl_progress)
     
@@ -284,7 +284,7 @@ def test_gps_dual_storage(mock_dl_item, mock_dl_progress):
     
     item = mock_dl_item(buffer=buf, mimetype="image/jpeg")
     
-    with patch('main.create_and_upload_thumbnail'):
+    with patch.object(ServiceRunner, 'create_and_upload_thumbnail'):
         runner = ServiceRunner()
         runner.run(item, progress=mock_dl_progress)
     
@@ -310,7 +310,7 @@ def test_default_thumb_size_override(mock_dl_item, mock_dl_progress):
         
         item = mock_dl_item(buffer=buf, mimetype="image/jpeg")
         
-        with patch('main.create_and_upload_thumbnail') as mock_thumb:
+        with patch.object(main.ServiceRunner, 'create_and_upload_thumbnail') as mock_thumb:
             runner = main.ServiceRunner()
             runner.run(item, progress=mock_dl_progress)
         
@@ -346,7 +346,7 @@ def test_happy_path_no_etl(mock_dl_item, mock_dl_progress):
     
     item = mock_dl_item(buffer=buf, mimetype="image/jpeg")
     
-    with patch('main.create_and_upload_thumbnail'):
+    with patch.object(ServiceRunner, 'create_and_upload_thumbnail'):
         runner = ServiceRunner()
         result = runner.run(item, progress=mock_dl_progress)
     
@@ -368,7 +368,7 @@ def test_rerun_clears_old_etl(mock_dl_item, mock_dl_progress):
     item = mock_dl_item(buffer=buf, mimetype="image/jpeg")
     item.metadata["system"]["etl"] = {"failed": True, "errors": ["old error"]}
     
-    with patch('main.create_and_upload_thumbnail'):
+    with patch.object(ServiceRunner, 'create_and_upload_thumbnail'):
         runner = ServiceRunner()
         result = runner.run(item, progress=mock_dl_progress)
     

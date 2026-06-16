@@ -1,16 +1,16 @@
 {
-    "name": "image-preprocess",
-    "displayName": "Image Preprocess",
+    "name": "image-preprocess-husam-both",
+    "displayName": "Image Preprocess husam both",
     "description": "Image Preprocess Application",
     "attributes": {
         "Provider": "Dataloop"
     },
-    "version": "3.0.0",
-    "scope": "system",
+    "version": "3.0.2",
+    "scope": "project",
     "components": {
         "modules": [
             {
-                "name": "default_module",
+                "name": "img_module",
                 "entryPoint": "img-preprocess/main.py",
                 "className": "ServiceRunner",
                 "initInputs": [],
@@ -74,8 +74,8 @@
         ],
         "services": [
             {
-                "name": "image-preprocess",
-                "moduleName": "default_module",
+                "name": "image-preprocess-husam",
+                "moduleName": "img_module",
                 "podType": "regular-s",
                 "runtime": {
                     "runnerImage": "gcr.io/viewo-g/piper/agent/cpu/image-preprocess:6",
@@ -92,7 +92,7 @@
                 "onReset": "failed"
             },
             {
-                "name": "tiff-converter",
+                "name": "tiff-converter-husam",
                 "moduleName": "tiff_module",
                 "podType": "regular-m",
                 "runtime": {
@@ -109,66 +109,6 @@
                 "executionTimeout": 3600,
                 "drainTime": 600,
                 "onReset": "rerun"
-            }
-        ],
-        "triggers": [
-            {
-                "name": "image-preprocess",
-                "type": "event",
-                "template": true,
-                "activation": {
-                    "autoClone": true,
-                    "cloneActiveDefault": true,
-                    "overridable": false
-                },
-                "applyOnExistingProjects": true,
-                "activateOnExistingProjects": false,
-                "spec": {
-                    "resource": "item",
-                    "actions": ["Created", "Clone"],
-                    "filter": {},
-                    "operation": {
-                        "type": "function",
-                        "functionName": "run",
-                        "serviceName": "image-preprocess"
-                    },
-                    "input": {
-                        "mode": "full",
-                        "max_file_size_mb": 100,
-                        "default_thumb_size": 128
-                    }
-                }
-            },
-            {
-                "name": "tiff-converter",
-                "active": true,
-                "type": "Event",
-                "scope": "project",
-                "namespace": "services.tiff-converter",
-                "spec": {
-                    "filter": {
-                        "metadata": {
-                            "system": {
-                                "mimetype": "image/tiff"
-                            }
-                        }
-                    },
-                    "executionMode": "Once",
-                    "resource": "Item",
-                    "actions": [
-                        "Created"
-                    ],
-                    "input": {
-                        "mode": "full",
-                        "max_file_size_mb": 2000,
-                        "default_thumb_size": 128
-                    },
-                    "operation": {
-                        "type": "function",
-                        "functionName": "run",
-                        "serviceName": "tiff-converter"
-                    }
-                }
             }
         ]
     }

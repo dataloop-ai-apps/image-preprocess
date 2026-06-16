@@ -2,7 +2,10 @@ import pytest
 from PIL import Image, ExifTags
 from io import BytesIO
 
-from thumbnail import auto_rotate, generate_thumbnail
+from main import ServiceRunner
+
+auto_rotate = ServiceRunner.auto_rotate
+generate_thumbnail = ServiceRunner.generate_thumbnail
 
 
 def _make_item():

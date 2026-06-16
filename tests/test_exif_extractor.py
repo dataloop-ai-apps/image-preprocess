@@ -3,7 +3,11 @@ from PIL.ExifTags import Base, GPS, IFD
 from PIL.TiffImagePlugin import IFDRational
 from io import BytesIO
 
-from metadata_extractor import extract_exif, extract_gps
+from main import ServiceRunner
+
+_runner = ServiceRunner()
+extract_exif = _runner.extract_exif
+extract_gps = _runner.extract_gps
 
 
 def create_test_image_with_exif(width, height, exif_tags=None, gps_tags=None):
