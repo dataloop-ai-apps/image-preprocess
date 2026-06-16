@@ -110,7 +110,7 @@ class ServiceRunner(dl.BaseServiceRunner):
         do_metadata = self.mode in ('full', 'metadata-only')
         do_thumbnail = self.mode in ('full', 'thumbnail-only')
 
-        # Ensure the etl error sink exists; all helpers route through _record_etl_error.
+        # Ensure the etl error sink exists; all helpers call record_etl_error directly.
         item.metadata.setdefault('system', {}).setdefault('etl', {}).setdefault('errors', [])
         self.tiff_filepath = None
         self.png_image = None
@@ -127,7 +127,7 @@ class ServiceRunner(dl.BaseServiceRunner):
             if file_size and file_size > self.max_file_size_mb * 1024 * 1024:
                 msg = 'File too large: {} bytes exceeds {}MB limit'.format(file_size, self.max_file_size_mb)
                 logger.error(msg)
-                self._record_etl_error(item, 'size_check', msg, failed=True)
+                record_etl_error(item, 'size_check', msg, failed=True)
                 return
 
             self._download_item(item)
@@ -160,7 +160,7 @@ class ServiceRunner(dl.BaseServiceRunner):
                 'TIFF conversion failed: item=%s name=%s error_type=%s',
                 item.id, item.name, type(e).__name__,
             )
-            self._record_etl_error(
+            record_etl_error(
                 item, 'conversion', str(e), failed=True,
                 traceback=traceback.format_exc(),
             )
@@ -200,7 +200,7 @@ class ServiceRunner(dl.BaseServiceRunner):
             self.pil_image = Image.open(self.tiff_filepath)
         except Exception as pil_err:
             logger.warning('PIL could not open file, using rasterio-only path: %s', pil_err)
-            self._record_etl_error(item, 'pil_open', str(pil_err))
+            record_etl_error(item, 'pil_open', str(pil_err))
             self.pil_image = None
             self.is_multibit = True
             self.exif_data = {'exif': {}, 'location': {}}
@@ -275,7 +275,7 @@ class ServiceRunner(dl.BaseServiceRunner):
         """Write the Rubiks-aligned `imageEtl` block.
 
         Reads the current error list from ``item.metadata`` so callers don't
-        have to pass it explicitly — it's maintained by ``_record_etl_error``.
+        have to pass it explicitly — it's maintained by ``record_etl_error``.
         """
         etl_errors = item.metadata.get('system', {}).get('etl', {}).get('errors', [])
         item.metadata['system']['imageEtl'] = {
@@ -290,11 +290,6 @@ class ServiceRunner(dl.BaseServiceRunner):
             },
         }
 
-    @staticmethod
-    def _record_etl_error(item, stage: str, error: str, failed: bool = False,
-                          **extra) -> list:
-        """Thin wrapper around ``common.etl_errors.record_etl_error``."""
-        return record_etl_error(item, stage, error, failed=failed, **extra)
 
     # ------------------------------------------------------------------
     # Skip logic
@@ -338,7 +333,7 @@ class ServiceRunner(dl.BaseServiceRunner):
             logger.debug('Multi-bit path selected (bits=%s)', bits)
         except Exception as e:
             logger.warning('BitsPerSample extraction failed: %s', e)
-            self._record_etl_error(item, 'exif_bits', str(e))
+            record_etl_error(item, 'exif_bits', str(e))
         # Default to multi-bit (geoio path) — safer fallback
         return True
 
