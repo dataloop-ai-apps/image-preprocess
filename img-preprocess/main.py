@@ -27,7 +27,7 @@ class ServiceRunner(dl.BaseServiceRunner):
     def __init__(self, **kwargs):
         pass
 
-    def on_create(self, item: dl.Item, context=None, progress=None):
+    def run(self, item: dl.Item, context=None, progress=None):
         """Process an image item: extract metadata and generate thumbnail.
         
         Processing mode is controlled via context.trigger_input:

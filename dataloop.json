@@ -16,7 +16,7 @@
                 "initInputs": [],
                 "functions": [
                     {
-                        "name": "on_create",
+                        "name": "run",
                         "description": "run image preprocess - metadata extraction and thumbnail creation",
                         "input": [
                             {
@@ -129,7 +129,7 @@
                     "filter": {},
                     "operation": {
                         "type": "function",
-                        "functionName": "on_create",
+                        "functionName": "run",
                         "serviceName": "image-preprocess"
                     },
                     "input": {
