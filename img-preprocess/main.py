@@ -369,3 +369,22 @@ class ServiceRunner(dl.BaseServiceRunner):
             item_metadata={"system": {"originItemId": item.id}}
         )
         item.metadata.setdefault("system", {})["thumbnailId"] = thumbnail_item.id
+
+    # ------------------------------------------------------------------
+    # Delete handler
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def on_delete(item: dl.Item) -> None:
+        """Clean up the generated thumbnail when the source image is deleted."""
+        thumbnail_id = item.metadata.get("system", {}).get("thumbnailId")
+        if thumbnail_id is None:
+            logger.info("item=%s no thumbnailId in metadata, nothing to delete", item.id)
+            return
+
+        logger.info("item=%s deleting thumbnail id=%s", item.id, thumbnail_id)
+        try:
+            dl.items.get(item_id=thumbnail_id).delete()
+            logger.info("item=%s thumbnail deleted", item.id)
+        except dl.exceptions.NotFound:
+            logger.info("item=%s thumbnail already deleted", item.id)

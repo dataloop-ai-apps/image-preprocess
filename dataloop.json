@@ -27,6 +27,17 @@
                         "output": []
                     },
                     {
+                        "name": "on_delete",
+                        "description": "cleanup generated thumbnail when source image is deleted",
+                        "input": [
+                            {
+                                "name": "item",
+                                "type": "Item"
+                            }
+                        ],
+                        "output": []
+                    },
+                    {
                         "name": "test",
                         "input": [],
                         "output": [],
@@ -43,6 +54,17 @@
                     {
                         "name": "run",
                         "description": "convert tiff to png",
+                        "input": [
+                            {
+                                "name": "item",
+                                "type": "Item"
+                            }
+                        ],
+                        "output": []
+                    },
+                    {
+                        "name": "on_delete",
+                        "description": "cleanup generated thumbnail and PNG modality when source TIFF is deleted",
                         "input": [
                             {
                                 "name": "item",
@@ -139,6 +161,36 @@
                 }
             },
             {
+                "name": "image-preprocess-deleted",
+                "type": "Event",
+                "template": true,
+                "activation": {
+                    "autoClone": true,
+                    "cloneActiveDefault": true,
+                    "overridable": false
+                },
+                "applyOnExistingProjects": true,
+                "activateOnExistingProjects": false,
+                "spec": {
+                    "resource": "Item",
+                    "actions": ["Deleted"],
+                    "executionMode": "Once",
+                    "filter": {
+                        "$and": [
+                            {"metadata.system.mimetype": "image/*"},
+                            {"metadata.system.mimetype": {"$ne": "image/tiff"}},
+                            {"type": "file"}
+                        ]
+                    },
+                    "operation": {
+                        "type": "function",
+                        "functionName": "on_delete",
+                        "serviceName": "image-preprocess"
+                    },
+                    "input": {}
+                }
+            },
+            {
                 "name": "tiff-converter",
                 "type": "Event",
                 "template": true,
@@ -176,6 +228,35 @@
                         "extract_exif": true,
                         "extract_gps": true
                     }
+                }
+            },
+            {
+                "name": "tiff-converter-deleted",
+                "type": "Event",
+                "template": true,
+                "activation": {
+                    "autoClone": true,
+                    "cloneActiveDefault": true,
+                    "overridable": false
+                },
+                "applyOnExistingProjects": true,
+                "activateOnExistingProjects": false,
+                "spec": {
+                    "resource": "Item",
+                    "actions": ["Deleted"],
+                    "executionMode": "Once",
+                    "filter": {
+                        "$and": [
+                            {"metadata.system.mimetype": "image/tiff"},
+                            {"type": "file"}
+                        ]
+                    },
+                    "operation": {
+                        "type": "function",
+                        "functionName": "on_delete",
+                        "serviceName": "tiff-converter"
+                    },
+                    "input": {}
                 }
             }
         ]

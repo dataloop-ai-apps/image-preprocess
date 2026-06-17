@@ -707,6 +707,38 @@ class ServiceRunner(dl.BaseServiceRunner):
         item.metadata.setdefault('system', {})['thumbnailId'] = thumbnail_item.id
         logger.info('Thumbnail uploaded: item=%s thumb_id=%s', item.id, thumbnail_item.id)
 
+    # ------------------------------------------------------------------
+    # Delete handler
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def on_delete(item: dl.Item) -> None:
+        """Clean up the generated thumbnail and PNG replace-modality on item deletion."""
+        thumbnail_id = item.metadata.get("system", {}).get("thumbnailId")
+        if thumbnail_id is not None:
+            logger.info("item=%s deleting thumbnail id=%s", item.id, thumbnail_id)
+            try:
+                dl.items.get(item_id=thumbnail_id).delete()
+                logger.info("item=%s thumbnail deleted", item.id)
+            except dl.exceptions.NotFound:
+                logger.info("item=%s thumbnail already deleted", item.id)
+
+        modalities = item.metadata.get("system", {}).get("modalities", []) or []
+        expected_name = item.id + ".png"
+        png_id = None
+        for modality in modalities:
+            if (modality.get("type") == "replace"
+                    and modality.get("name") == expected_name):
+                png_id = modality.get("ref")
+                break
+        if png_id is not None:
+            logger.info("item=%s deleting png modality id=%s", item.id, png_id)
+            try:
+                dl.items.get(item_id=png_id).delete()
+                logger.info("item=%s png modality deleted", item.id)
+            except dl.exceptions.NotFound:
+                logger.info("item=%s png modality already deleted", item.id)
+
     @staticmethod
     def make_thumbnail_buffer(pil_image: Image.Image, default_thumb_size: int) -> BytesIO:
         """Resize ``pil_image`` in place and return a PNG-encoded BytesIO buffer."""
