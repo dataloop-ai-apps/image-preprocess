@@ -98,6 +98,86 @@
                 "drainTime": 600,
                 "onReset": "rerun"
             }
+        ],
+        "triggers": [
+            {
+                "name": "image-preprocess",
+                "type": "Event",
+                "template": true,
+                "activation": {
+                    "autoClone": true,
+                    "cloneActiveDefault": true,
+                    "overridable": false
+                },
+                "applyOnExistingProjects": true,
+                "activateOnExistingProjects": false,
+                "spec": {
+                    "resource": "Item",
+                    "actions": ["Created", "Clone"],
+                    "executionMode": "Once",
+                    "filter": {
+                        "$and": [
+                            {"metadata.system.mimetype": "image/*"},
+                            {"metadata.system.mimetype": {"$ne": "image/tiff"}},
+                            {"hidden": false},
+                            {"type": "file"}
+                        ]
+                    },
+                    "operation": {
+                        "type": "function",
+                        "functionName": "run",
+                        "serviceName": "image-preprocess"
+                    },
+                    "input": {
+                        "metadata_only": false,
+                        "thumbnail_only": false,
+                        "thumbnail_size": 128,
+                        "max_file_size_mb": 100,
+                        "extract_exif": true,
+                        "extract_gps": true
+                    }
+                }
+            },
+            {
+                "name": "tiff-converter",
+                "type": "Event",
+                "template": true,
+                "activation": {
+                    "autoClone": true,
+                    "cloneActiveDefault": true,
+                    "overridable": false
+                },
+                "applyOnExistingProjects": true,
+                "activateOnExistingProjects": false,
+                "spec": {
+                    "resource": "Item",
+                    "actions": ["Created"],
+                    "executionMode": "Once",
+                    "filter": {
+                        "$and": [
+                            {"metadata.system.mimetype": "image/tiff"},
+                            {"hidden": false},
+                            {"type": "file"}
+                        ]
+                    },
+                    "operation": {
+                        "type": "function",
+                        "functionName": "run",
+                        "serviceName": "tiff-converter"
+                    },
+                    "input": {
+                        "mode": "full",
+                        "create_png_modality": true,
+                        "thumbnail_size": 128,
+                        "max_file_size_mb": 2000,
+                        "max_output_dimensions": null,
+                        "normalization_percentile": [0, 100],
+                        "vis_bands": [1, 2, 3],
+                        "extract_exif": true,
+                        "extract_gps": true
+                    }
+                }
+            }
         ]
     }
 }
