@@ -30,7 +30,7 @@ class ServiceRunner(dl.BaseServiceRunner):
     # Entry point
     # ------------------------------------------------------------------
 
-    def run(self, item: dl.Item, context=None, progress=None):
+    def on_create(self, item: dl.Item, context=None, progress=None):
         """Process an image item: extract metadata and generate thumbnail.
 
         Behaviour is controlled via ``context.trigger_input``:
@@ -47,10 +47,13 @@ class ServiceRunner(dl.BaseServiceRunner):
 
         extract_metadata = bool(trigger_input.get('extract_metadata', True))
         extract_thumbnail = bool(trigger_input.get('extract_thumbnail', True))
+        exif_enabled = bool(trigger_input.get('extract_exif', True))
+        gps_enabled = bool(trigger_input.get('extract_gps', True))
         max_file_size_mb = int(trigger_input.get('max_file_size_mb', MAX_FILE_SIZE_MB))
-        default_thumb_size = int(trigger_input.get('default_thumb_size', DEFAULT_THUMB_SIZE))
+        default_thumb_size = int(trigger_input.get('thumbnail_size', DEFAULT_THUMB_SIZE))
         logger.info(
-            f"Config: extract_metadata={extract_metadata} extract_thumbnail={extract_thumbnail}"
+            f"Config: extract_metadata={extract_metadata} extract_thumbnail={extract_thumbnail} "
+            f"exif_enabled={exif_enabled} gps_enabled={gps_enabled}"
         )
 
         if not extract_metadata and not extract_thumbnail:
@@ -100,7 +103,8 @@ class ServiceRunner(dl.BaseServiceRunner):
 
                 if extract_metadata:
                     try:
-                        self.extract_exif(img, item)
+                        self.extract_exif(img, item,
+                                          exif=exif_enabled, gps=gps_enabled)
                     except Exception as e:
                         logger.exception(f"Failed to extract EXIF for item {item.id}")
                         record_etl_error(item, stage="exif", error=f"Exif extraction failed: {e}")
@@ -192,53 +196,57 @@ class ServiceRunner(dl.BaseServiceRunner):
         
         return location
 
-    def extract_exif(self, img: Image.Image, item):
+    def extract_exif(self, img: Image.Image, item, exif=True, gps=True):
         """Extract EXIF metadata from image and write to item.metadata.system.exif.
 
+        Set *exif* or *gps* to ``False`` to skip the corresponding
+        extraction entirely.
         Sets camelCase keys on item.metadata["system"]["exif"].
         Does nothing if no EXIF data exists.
         Caller is expected to wrap this in a try/except for non-fatal handling.
         """
-        exif = img.getexif()
-        if not exif:
+        raw_exif = img.getexif()
+        if not raw_exif:
             return
 
-        exif_ifd = exif.get_ifd(IFD.Exif)
+        if exif:
+            exif_ifd = raw_exif.get_ifd(IFD.Exif)
 
-        # (result_key, source, exif_tag, transform)
-        fields = [
-            ("orientation",       exif,     Base.Orientation,         int),
-            ("camera_make",       exif,     Base.Make,                self._clean_str),
-            ("camera_model",      exif,     Base.Model,               self._clean_str),
-            ("date_time",         exif_ifd, Base.DateTimeOriginal,    self._clean_str),
-            ("iso",               exif_ifd, Base.ISOSpeedRatings,     self._iso),
-            ("aperture",          exif_ifd, Base.FNumber,             lambda v: round(self._ratio(v), 2)),
-            ("exposure_time",     exif_ifd, Base.ExposureTime,        self._exposure),
-            ("focal_length",      exif_ifd, Base.FocalLength,         lambda v: round(self._ratio(v), 3)),
-            ("focal_length_35mm", exif_ifd, Base.FocalLengthIn35mmFilm, int),
-            ("lens_model",        exif_ifd, Base.LensModel,           self._clean_str),
-            ("flash",             exif_ifd, Base.Flash,               lambda v: bool(int(v) & 1)),
-            ("white_balance",     exif_ifd, Base.WhiteBalance,        int),
-        ]
+            # (result_key, source, exif_tag, transform)
+            fields = [
+                ("orientation",       raw_exif, Base.Orientation,         int),
+                ("camera_make",       raw_exif, Base.Make,                self._clean_str),
+                ("camera_model",      raw_exif, Base.Model,               self._clean_str),
+                ("date_time",         exif_ifd, Base.DateTimeOriginal,    self._clean_str),
+                ("iso",               exif_ifd, Base.ISOSpeedRatings,     self._iso),
+                ("aperture",          exif_ifd, Base.FNumber,             lambda v: round(self._ratio(v), 2)),
+                ("exposure_time",     exif_ifd, Base.ExposureTime,        self._exposure),
+                ("focal_length",      exif_ifd, Base.FocalLength,         lambda v: round(self._ratio(v), 3)),
+                ("focal_length_35mm", exif_ifd, Base.FocalLengthIn35mmFilm, int),
+                ("lens_model",        exif_ifd, Base.LensModel,           self._clean_str),
+                ("flash",             exif_ifd, Base.Flash,               lambda v: bool(int(v) & 1)),
+                ("white_balance",     exif_ifd, Base.WhiteBalance,        int),
+            ]
 
-        # DateTimeOriginal may live in main IFD on some files
-        result = {}
-        if exif.get(Base.DateTimeOriginal) is not None and exif_ifd.get(Base.DateTimeOriginal) is None:
-            exif_ifd[Base.DateTimeOriginal] = exif.get(Base.DateTimeOriginal)
+            # DateTimeOriginal may live in main IFD on some files
+            result = {}
+            if raw_exif.get(Base.DateTimeOriginal) is not None and exif_ifd.get(Base.DateTimeOriginal) is None:
+                exif_ifd[Base.DateTimeOriginal] = raw_exif.get(Base.DateTimeOriginal)
 
-        for key, source, tag, transform in fields:
-            raw = source.get(tag)
-            if raw is None:
-                continue
-            try:
-                result[key] = transform(raw)
-            except Exception as e:
-                logger.warning(f"Failed to extract {key}: {e}")
-        
-        if result:
-            item.metadata.setdefault("system", {})["exif"] = self.map_exif_keys(result)
+            for key, source, tag, transform in fields:
+                raw = source.get(tag)
+                if raw is None:
+                    continue
+                try:
+                    result[key] = transform(raw)
+                except Exception as e:
+                    logger.warning(f"Failed to extract {key}: {e}")
+            
+            if result:
+                item.metadata.setdefault("system", {})["exif"] = self.map_exif_keys(result)
 
-        self.extract_gps(exif, item)
+        if gps:
+            self.extract_gps(raw_exif, item)
 
     def _dms_to_decimal(self, dms, ref, negative_ref):
         """Convert a (deg, min, sec) tuple to signed decimal degrees."""

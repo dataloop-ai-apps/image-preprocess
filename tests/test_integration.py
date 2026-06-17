@@ -22,7 +22,7 @@ def test_happy_path_full_exif_jpeg(mock_dl_item, mock_dl_progress):
     with patch.object(ServiceRunner, 'create_and_upload_thumbnail') as mock_thumb:
         mock_thumb.side_effect = lambda img, it, sz: it.metadata.setdefault("system", {}).__setitem__("thumbnailId", "thumb-123")
         runner = ServiceRunner()
-        runner.run(item, progress=mock_dl_progress)
+        runner.on_create(item, progress=mock_dl_progress)
     
     assert item.update.called
     assert item.metadata["system"]["width"] == 800
@@ -42,7 +42,7 @@ def test_no_exif_image_png(mock_dl_item, mock_dl_progress):
     
     with patch.object(ServiceRunner, 'create_and_upload_thumbnail'):
         runner = ServiceRunner()
-        runner.run(item, progress=mock_dl_progress)
+        runner.on_create(item, progress=mock_dl_progress)
     
     assert item.update.called
     assert item.metadata["system"]["width"] == 400
@@ -59,7 +59,7 @@ def test_non_image_mime(mock_dl_item, mock_dl_progress):
 
     runner = ServiceRunner()
     with pytest.raises(ValueError):
-        runner.run(item, progress=mock_dl_progress)
+        runner.on_create(item, progress=mock_dl_progress)
 
     # Should not have attempted download
     assert not item.download.called
@@ -77,7 +77,7 @@ def test_both_extract_flags_false_skips(mock_dl_item, mock_dl_progress):
     context.trigger_input = {"extract_metadata": False, "extract_thumbnail": False}
 
     runner = ServiceRunner()
-    result = runner.run(item, context=context, progress=mock_dl_progress)
+    result = runner.on_create(item, context=context, progress=mock_dl_progress)
 
     # Should return early without calling download
     assert not item.download.called
@@ -97,7 +97,7 @@ def test_extract_thumbnail_false_skips_thumbnail(mock_dl_item, mock_dl_progress)
     context.trigger_input = {"extract_thumbnail": False}
 
     runner = ServiceRunner()
-    runner.run(item, context=context, progress=mock_dl_progress)
+    runner.on_create(item, context=context, progress=mock_dl_progress)
 
     # No thumbnail should be generated
     assert "thumbnailId" not in item.metadata["system"]
@@ -119,7 +119,7 @@ def test_exif_extraction_fails(mock_dl_item, mock_dl_progress):
         with patch.object(ServiceRunner, 'create_and_upload_thumbnail') as mock_thumb:
             mock_thumb.side_effect = lambda img, it, sz: it.metadata.setdefault("system", {}).__setitem__("thumbnailId", "thumb-123")
             runner = ServiceRunner()
-            runner.run(item, progress=mock_dl_progress)
+            runner.on_create(item, progress=mock_dl_progress)
     
     # Thumbnail should still be generated
     assert "thumbnailId" in item.metadata["system"]
@@ -144,7 +144,7 @@ def test_thumbnail_gen_fails(mock_dl_item, mock_dl_progress):
     
     with patch.object(ServiceRunner, 'create_and_upload_thumbnail', side_effect=Exception("Thumbnail failed")):
         runner = ServiceRunner()
-        runner.run(item, progress=mock_dl_progress)
+        runner.on_create(item, progress=mock_dl_progress)
     
     # Metadata should still be written
     assert item.update.called
@@ -168,7 +168,7 @@ def test_both_fail(mock_dl_item, mock_dl_progress):
     with patch.object(ServiceRunner, 'extract_exif', side_effect=Exception("EXIF failed")):
         with patch.object(ServiceRunner, 'create_and_upload_thumbnail', side_effect=Exception("Thumbnail failed")):
             runner = ServiceRunner()
-            runner.run(item, progress=mock_dl_progress)
+            runner.on_create(item, progress=mock_dl_progress)
     
     # ETL should have 2 errors but no failed flag
     etl = item.metadata["system"]["etl"]
@@ -186,7 +186,7 @@ def test_download_fails(mock_dl_item, mock_dl_progress):
 
     runner = ServiceRunner()
     with pytest.raises(Exception, match="Download failed"):
-        runner.run(item, progress=mock_dl_progress)
+        runner.on_create(item, progress=mock_dl_progress)
 
     etl = item.metadata["system"]["etl"]
     assert etl["failed"] is True
@@ -205,7 +205,7 @@ def test_tiff_image(mock_dl_item, mock_dl_progress):
     
     with patch.object(ServiceRunner, 'create_and_upload_thumbnail'):
         runner = ServiceRunner()
-        runner.run(item, progress=mock_dl_progress)
+        runner.on_create(item, progress=mock_dl_progress)
     
     assert item.update.called
     assert item.metadata["system"]["width"] == 400
@@ -229,7 +229,7 @@ def test_orientation_raw_dimensions_preserved(mock_dl_item, mock_dl_progress):
     
     with patch.object(ServiceRunner, 'create_and_upload_thumbnail'):
         runner = ServiceRunner()
-        runner.run(item, progress=mock_dl_progress)
+        runner.on_create(item, progress=mock_dl_progress)
     
     # Dimensions should reflect original pre-rotation layout
     assert item.metadata["system"]["width"] == 800
@@ -244,7 +244,7 @@ def test_file_too_large(mock_dl_item, mock_dl_progress):
 
     runner = ServiceRunner()
     with pytest.raises(ValueError, match="File too large"):
-        runner.run(item, progress=mock_dl_progress)
+        runner.on_create(item, progress=mock_dl_progress)
 
     assert not item.download.called
     etl = item.metadata["system"]["etl"]
@@ -283,7 +283,7 @@ def test_gps_dual_storage(mock_dl_item, mock_dl_progress):
     
     with patch.object(ServiceRunner, 'create_and_upload_thumbnail'):
         runner = ServiceRunner()
-        runner.run(item, progress=mock_dl_progress)
+        runner.on_create(item, progress=mock_dl_progress)
     
     # GPS should be in both system and user
     assert "location" in item.metadata["system"]
@@ -306,7 +306,7 @@ def test_default_thumb_size_override(mock_dl_item, mock_dl_progress):
 
     with patch.object(ServiceRunner, 'create_and_upload_thumbnail') as mock_thumb:
         runner = ServiceRunner()
-        runner.run(item, context=context, progress=mock_dl_progress)
+        runner.on_create(item, context=context, progress=mock_dl_progress)
 
     mock_thumb.assert_called_once()
     assert mock_thumb.call_args[0][2] == 256
@@ -321,7 +321,7 @@ def test_corrupt_image(mock_dl_item, mock_dl_progress):
 
     runner = ServiceRunner()
     with pytest.raises(Exception):
-        runner.run(item, progress=mock_dl_progress)
+        runner.on_create(item, progress=mock_dl_progress)
 
     # Should write ETL hard failure
     etl = item.metadata["system"]["etl"]
@@ -342,7 +342,7 @@ def test_happy_path_no_etl(mock_dl_item, mock_dl_progress):
     
     with patch.object(ServiceRunner, 'create_and_upload_thumbnail'):
         runner = ServiceRunner()
-        result = runner.run(item, progress=mock_dl_progress)
+        result = runner.on_create(item, progress=mock_dl_progress)
     
     etl = item.metadata["system"].get("etl", {})
     assert "failed" not in etl
@@ -364,7 +364,7 @@ def test_rerun_clears_old_etl(mock_dl_item, mock_dl_progress):
     
     with patch.object(ServiceRunner, 'create_and_upload_thumbnail'):
         runner = ServiceRunner()
-        result = runner.run(item, progress=mock_dl_progress)
+        result = runner.on_create(item, progress=mock_dl_progress)
     
     etl = item.metadata["system"].get("etl", {})
     assert "failed" not in etl

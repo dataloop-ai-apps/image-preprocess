@@ -60,13 +60,16 @@ SKIP_PROJECTS: set[str] = set()
 # Dataset-level metadata flag name to check for skipping
 SKIP_DATASET_FLAG = 'skipTiffConversion'
 
+# Maximum number of pixel samples to collect for percentile-based normalization.
+_PERCENTILE_MAX_SAMPLES = 5_000_000
+
 
 class ServiceRunner(dl.BaseServiceRunner):
 
     def __init__(self, **kwargs):
         # Disable PIL's decompression bomb safety: TIFFs are legitimately huge.
         Image.MAX_IMAGE_PIXELS = None
-        # Per-run state. Reset at the start of every run().
+        # Per-run state. Reset at the start of every on_create().
         # NOTE: this makes ServiceRunner non-reentrant — one item per worker at a time.
         self.tiff_filepath: str | None = None
         self.png_image: Image.Image | None = None
@@ -78,8 +81,13 @@ class ServiceRunner(dl.BaseServiceRunner):
         self.dims: dict | None = None
         self.extract_metadata: bool = True
         self.extract_thumbnail: bool = True
+        self.exif_enabled: bool = True
+        self.gps_enabled: bool = True
         self.max_file_size_mb: int = MAX_FILE_SIZE_MB
-        self.default_thumb_size: int = DEFAULT_THUMB_SIZE
+        self.thumbnail_size: int = DEFAULT_THUMB_SIZE
+        self.max_output_dimensions: int | None = None
+        self.normalization_percentile: list = [0, 100]
+        self.vis_bands: list = [1, 2, 3]
         logger.info(
             'ServiceRunner initialized: thumb_size=%d, max_file_size_mb=%d',
             DEFAULT_THUMB_SIZE, MAX_FILE_SIZE_MB,
@@ -90,14 +98,14 @@ class ServiceRunner(dl.BaseServiceRunner):
     # Entry point
     # ------------------------------------------------------------------
 
-    def run(self, item: dl.Item, context=None, progress: dl.Progress | None = None) -> None:
+    def on_create(self, item: dl.Item, context=None, progress: dl.Progress | None = None) -> None:
         """Process a TIFF item.
 
         Behaviour is controlled via ``context.trigger_input``:
             extract_metadata   – bool (default True)
             extract_thumbnail  – bool (default True)
             max_file_size_mb   – int  (default MAX_FILE_SIZE_MB)
-            default_thumb_size – int  (default DEFAULT_THUMB_SIZE)
+            thumbnail_size – int  (default DEFAULT_THUMB_SIZE)
         If both extract flags are False, processing is skipped.
         """
         if self._should_skip(item):
@@ -109,11 +117,22 @@ class ServiceRunner(dl.BaseServiceRunner):
 
         self.extract_metadata = bool(trigger_input.get('extract_metadata', True))
         self.extract_thumbnail = bool(trigger_input.get('extract_thumbnail', True))
+        self.exif_enabled = bool(trigger_input.get('extract_exif', True))
+        self.gps_enabled = bool(trigger_input.get('extract_gps', True))
         self.max_file_size_mb = int(trigger_input.get('max_file_size_mb', MAX_FILE_SIZE_MB))
-        self.default_thumb_size = int(trigger_input.get('default_thumb_size', DEFAULT_THUMB_SIZE))
+        self.thumbnail_size = int(trigger_input.get('thumbnail_size', DEFAULT_THUMB_SIZE))
+        raw_mod = trigger_input.get('max_output_dimensions', None)
+        self.max_output_dimensions = int(raw_mod) if raw_mod is not None else None
+        self.normalization_percentile = list(trigger_input.get('normalization_percentile', [0, 100]))
+        self.vis_bands = list(trigger_input.get('vis_bands', [1, 2, 3]))
         logger.info(
-            'Processing config: extract_metadata=%s extract_thumbnail=%s max_file_size_mb=%d default_thumb_size=%d',
-            self.extract_metadata, self.extract_thumbnail, self.max_file_size_mb, self.default_thumb_size,
+            'Processing config: extract_metadata=%s extract_thumbnail=%s '
+            'exif_enabled=%s gps_enabled=%s max_file_size_mb=%d '
+            'thumbnail_size=%d max_output_dimensions=%s normalization_percentile=%s vis_bands=%s',
+            self.extract_metadata, self.extract_thumbnail,
+            self.exif_enabled, self.gps_enabled, self.max_file_size_mb,
+            self.thumbnail_size, self.max_output_dimensions,
+            self.normalization_percentile, self.vis_bands,
         )
 
         if not self.extract_metadata and not self.extract_thumbnail:
@@ -156,7 +175,7 @@ class ServiceRunner(dl.BaseServiceRunner):
 
             if self.extract_thumbnail:
                 try:
-                    self.generate_thumbnail(item, self.png_image, self.default_thumb_size)
+                    self.generate_thumbnail(item, self.png_image, self.thumbnail_size)
                 except Exception as e:
                     logger.exception('Thumbnail generation failed for item=%s', item.id)
                     record_etl_error(item, 'thumbnail', f'Thumbnail generation failed: {e}')
@@ -210,7 +229,9 @@ class ServiceRunner(dl.BaseServiceRunner):
         exifdata = self.read_exif_tags(item, self.pil_image)
         self.is_multibit = self._get_bits_per_sample(item, exifdata)
         if self.extract_metadata:
-            self.exif_data = self.extract_exif(item, exifdata)
+            self.exif_data = self.extract_exif(item, exifdata,
+                                              exif=self.exif_enabled,
+                                              gps=self.gps_enabled)
 
 
     def _build_and_upload_png(self, item: dl.Item) -> dl.Item:
@@ -228,6 +249,17 @@ class ServiceRunner(dl.BaseServiceRunner):
             self.png_image, self.shape, self.tiff_meta = self._convert_onebit(self.pil_image)
             logger.info('1-bit conversion: size=%s mode=%s shape=%s',
                         self.png_image.size, self.png_image.mode, self.shape)
+
+        # Downscale the PNG modality if it exceeds max_output_dimensions.
+        if self.max_output_dimensions is not None:
+            w, h = self.png_image.size
+            if w > self.max_output_dimensions or h > self.max_output_dimensions:
+                logger.info('Resizing PNG modality from %dx%d to fit %d',
+                            w, h, self.max_output_dimensions)
+                self.png_image.thumbnail(
+                    (self.max_output_dimensions, self.max_output_dimensions),
+                    Image.Resampling.LANCZOS,
+                )
 
         remote_path = os.path.dirname(item.filename)
         buf = BytesIO()
@@ -344,9 +376,14 @@ class ServiceRunner(dl.BaseServiceRunner):
         """Normalize pixel values to uint8 using windowed (chunked) reads.
 
         Uses two-pass block-by-block streaming so the full raster is never
-        materialised in memory. Only the first 3 bands are read for the PNG
-        visualisation; the returned *shape* still reflects the original band
-        count so that channels metadata stays accurate.
+        materialised in memory.  Bands are selected via ``self.vis_bands``
+        (1-indexed); any indices that exceed the file's band count are
+        silently dropped.  The returned *shape* still reflects the original
+        band count so that channels metadata stays accurate.
+
+        When ``self.normalization_percentile`` differs from ``[0, 100]``,
+        percentile clipping is used instead of raw min/max to compute the
+        mapping range (more robust to outliers in satellite/aerial imagery).
         """
         logger.info('Opening with rasterio: %s', tiff_path)
 
@@ -356,15 +393,21 @@ class ServiceRunner(dl.BaseServiceRunner):
                         src.crs, src.nodata)
 
             full_shape = (src.count, src.height, src.width)
-            vis_bands = min(src.count, 3)
-            indexes = list(range(1, vis_bands + 1))  # rasterio is 1-indexed
+            # Use user-specified band indices (1-indexed), falling back to
+            # the first min(count, 3) bands when the input is empty/invalid.
+            indexes = [int(b) for b in self.vis_bands if 1 <= int(b) <= src.count]
+            if not indexes:
+                indexes = list(range(1, min(src.count, 3) + 1))
+            num_vis_bands = len(indexes)
+            logger.info('Visualization bands: indexes=%s (of %d available)', indexes, src.count)
             is_float = np.issubdtype(np.dtype(src.dtypes[0]), np.floating)
 
             meta = self._build_base_meta(src)
             meta = self._enrich_geo_metadata(src, meta, tiff_path)
 
-            dmin, dmax = self._scan_global_minmax(src, indexes, is_float)
-            output = self._normalize_windowed(src, indexes, is_float, dmin, dmax, vis_bands)
+            dmin, dmax = self._scan_global_minmax(src, indexes, is_float,
+                                                  self.normalization_percentile)
+            output = self._normalize_windowed(src, indexes, is_float, dmin, dmax, num_vis_bands)
 
         result_image = self._array_to_image(output)
         meta = self._sanitize_metadata(meta)
@@ -391,13 +434,32 @@ class ServiceRunner(dl.BaseServiceRunner):
             mask |= (block == nodata)
         return mask
 
-    def _scan_global_minmax(self, src, indexes, is_float) -> tuple[float, float]:
-        """Pass 1: stream all blocks to compute the global valid-pixel min/max."""
+    def _scan_global_minmax(self, src, indexes, is_float,
+                            percentile=(0, 100)) -> tuple[float, float]:
+        """Pass 1: compute the normalization range.
+
+        When *percentile* is ``[0, 100]`` (the default) this falls back to
+        the fast streaming min/max — no extra memory is needed.
+
+        For any other percentile pair (e.g. ``[2, 98]``), valid pixel
+        values are collected into a bounded reservoir of up to
+        ``_PERCENTILE_MAX_SAMPLES`` samples and ``np.percentile`` is
+        used to derive the clipping range.
+        """
         nodata = src.nodata
+        plow, phigh = float(percentile[0]), float(percentile[1])
+        use_percentile = plow > 0 or phigh < 100
+
         gmin = np.float64(np.inf)
         gmax = np.float64(-np.inf)
         total_valid = 0
         total_masked = 0
+
+        # Only allocated when percentile clipping is active.
+        sample_chunks = [] if use_percentile else None
+        sample_count = 0
+        # Seeded RNG for reproducible random subsampling when a block exceeds the budget.
+        rng = np.random.default_rng(42) if use_percentile else None
 
         for _, window in src.block_windows(1):
             block = src.read(indexes=indexes, window=window)
@@ -405,18 +467,44 @@ class ServiceRunner(dl.BaseServiceRunner):
             valid = block[~mask]
             total_valid += valid.size
             total_masked += int(mask.sum())
-            if valid.size > 0:
+            if valid.size == 0:
+                continue
+
+            if not use_percentile:
                 bmin, bmax = float(valid.min()), float(valid.max())
                 if bmin < gmin:
                     gmin = bmin
                 if bmax > gmax:
                     gmax = bmax
+            else:
+                remaining = _PERCENTILE_MAX_SAMPLES - sample_count
+                if remaining <= 0:
+                    continue
+                flat = valid.ravel().astype(np.float64)
+                if flat.size <= remaining:
+                    sample_chunks.append(flat)
+                    sample_count += flat.size
+                else:
+                    idx = rng.choice(flat.size, size=remaining, replace=False)
+                    sample_chunks.append(flat[idx])
+                    sample_count += remaining
 
         if total_valid == 0:
-            gmin = gmax = 0.0
-        logger.info('Pass 1 min/max: dmin=%s dmax=%s valid=%d masked=%d',
-                    gmin, gmax, total_valid, total_masked)
-        return float(gmin), float(gmax)
+            logger.info('Pass 1: no valid pixels found')
+            return 0.0, 0.0
+
+        if not use_percentile:
+            logger.info('Pass 1 min/max: dmin=%s dmax=%s valid=%d masked=%d',
+                        gmin, gmax, total_valid, total_masked)
+            return float(gmin), float(gmax)
+
+        samples = np.concatenate(sample_chunks)
+        dmin, dmax = np.percentile(samples, [plow, phigh])
+        logger.info(
+            'Pass 1 percentile [%.1f, %.1f]: dmin=%s dmax=%s valid=%d masked=%d sampled=%d',
+            plow, phigh, dmin, dmax, total_valid, total_masked, samples.size,
+        )
+        return float(dmin), float(dmax)
 
     def _normalize_windowed(self, src, indexes, is_float, dmin, dmax,
                             vis_bands) -> np.ndarray:
@@ -605,47 +693,51 @@ class ServiceRunner(dl.BaseServiceRunner):
         return pil_image.getexif()
 
     @staticmethod
-    def extract_exif(item: dl.Item, exifdata) -> dict:
+    def extract_exif(item: dl.Item, exifdata, exif=True, gps=True) -> dict:
         """Extract EXIF metadata and GPS coordinates matching Rubiks field names.
 
+        Set *exif* or *gps* to ``False`` to skip the corresponding
+        extraction entirely.
         Caller is expected to wrap this in a try/except for non-fatal handling.
         """
         result = {'exif': {}, 'location': {}}
         if not exifdata:
             return result
 
-        tag_map = {
-            'DateTimeOriginal': EXIF_TAG['DateTimeOriginal'],
-            'Model':             EXIF_TAG['Model'],
-            'ExposureTime':      EXIF_TAG['ExposureTime'],
-            'FNumber':           EXIF_TAG['FNumber'],
-            'ISO':               EXIF_TAG['ISO'],
-            'WhiteBalance':      EXIF_TAG['WhiteBalance'],
-            'Orientation':       EXIF_TAG['Orientation'],
-        }
+        if exif:
+            tag_map = {
+                'DateTimeOriginal': EXIF_TAG['DateTimeOriginal'],
+                'Model':             EXIF_TAG['Model'],
+                'ExposureTime':      EXIF_TAG['ExposureTime'],
+                'FNumber':           EXIF_TAG['FNumber'],
+                'ISO':               EXIF_TAG['ISO'],
+                'WhiteBalance':      EXIF_TAG['WhiteBalance'],
+                'Orientation':       EXIF_TAG['Orientation'],
+            }
 
-        for name, tag_id in tag_map.items():
-            value = exifdata.get(tag_id)
-            if value is not None:
-                if name == 'DateTimeOriginal' and isinstance(value, str):
-                    try:
-                        dt = datetime.datetime.strptime(value, '%Y:%m:%d %H:%M:%S')
-                        value = dt.isoformat() + 'Z'
-                    except (ValueError, TypeError):
-                        pass
-                result['exif'][name] = value
+            for name, tag_id in tag_map.items():
+                value = exifdata.get(tag_id)
+                if value is not None:
+                    if name == 'DateTimeOriginal' and isinstance(value, str):
+                        try:
+                            dt = datetime.datetime.strptime(value, '%Y:%m:%d %H:%M:%S')
+                            value = dt.isoformat() + 'Z'
+                        except (ValueError, TypeError):
+                            pass
+                    result['exif'][name] = value
 
-        gps_ifd = exifdata.get_ifd(EXIF_TAG['GPSInfoIFD'])
-        if gps_ifd:
-            lat = ServiceRunner.parse_gps_coord(item, gps_ifd, 1, 2)
-            lon = ServiceRunner.parse_gps_coord(item, gps_ifd, 3, 4)
-            alt = gps_ifd.get(6)
-            if lat is not None:
-                result['location']['latitude'] = lat
-            if lon is not None:
-                result['location']['longitude'] = lon
-            if alt is not None:
-                result['location']['altitude'] = float(alt)
+        if gps:
+            gps_ifd = exifdata.get_ifd(EXIF_TAG['GPSInfoIFD'])
+            if gps_ifd:
+                lat = ServiceRunner.parse_gps_coord(item, gps_ifd, 1, 2)
+                lon = ServiceRunner.parse_gps_coord(item, gps_ifd, 3, 4)
+                alt = gps_ifd.get(6)
+                if lat is not None:
+                    result['location']['latitude'] = lat
+                if lon is not None:
+                    result['location']['longitude'] = lon
+                if alt is not None:
+                    result['location']['altitude'] = float(alt)
 
         return result
 
@@ -689,14 +781,14 @@ class ServiceRunner(dl.BaseServiceRunner):
     # Thumbnail generation
     # ------------------------------------------------------------------
 
-    def generate_thumbnail(self, item: dl.Item, png_image: Image.Image, default_thumb_size: int) -> None:
+    def generate_thumbnail(self, item: dl.Item, png_image: Image.Image, thumbnail_size: int) -> None:
         """Generate and upload a thumbnail from the in-memory converted PNG.
 
         Uses the PNG image and uploads the resized image directly from a BytesIO buffer.
         Mutates ``item.metadata`` in place when successful.
         Caller is expected to wrap this in a try/except for non-fatal handling.
         """
-        buf = self.make_thumbnail_buffer(png_image, default_thumb_size)
+        buf = self.make_thumbnail_buffer(png_image, thumbnail_size)
         thumbnail_item = item.dataset.items.upload(
             local_path=buf,
             remote_path='/.dataloop/thumbnails',
@@ -740,12 +832,12 @@ class ServiceRunner(dl.BaseServiceRunner):
                 logger.info("item=%s png modality already deleted", item.id)
 
     @staticmethod
-    def make_thumbnail_buffer(pil_image: Image.Image, default_thumb_size: int) -> BytesIO:
+    def make_thumbnail_buffer(pil_image: Image.Image, thumbnail_size: int) -> BytesIO:
         """Resize ``pil_image`` in place and return a PNG-encoded BytesIO buffer."""
         thumb = pil_image
         if thumb.mode != 'RGBA':
             thumb = thumb.convert('RGBA')
-        thumb.thumbnail(size=(default_thumb_size, default_thumb_size))
+        thumb.thumbnail(size=(thumbnail_size, thumbnail_size))
         buf = BytesIO()
         thumb.save(buf, format='PNG')
         buf.seek(0)
