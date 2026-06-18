@@ -1,12 +1,18 @@
 {
-    "name": "image-preprocess-husam-both",
-    "displayName": "Image Preprocess husam both",
+    "name": "image-preprocess-app",
+    "displayName": "Image Preprocess App",
     "description": "Image Preprocess Application",
     "attributes": {
-        "Provider": "Dataloop"
+        "Provider": "Dataloop",
+        "Application Type": [
+            "Preprocess"
+        ],
+        "Media Type": [
+            "Image"
+        ]
     },
-    "version": "3.0.2",
-    "scope": "project",
+    "version": "0.0.1",
+    "scope": "public",
     "components": {
         "modules": [
             {
@@ -84,7 +90,7 @@
         ],
         "services": [
             {
-                "name": "image-preprocess-husam",
+                "name": "image-preprocess",
                 "moduleName": "img_module",
                 "podType": "regular-s",
                 "runtime": {
@@ -102,7 +108,7 @@
                 "onReset": "failed"
             },
             {
-                "name": "tiff-converter-husam",
+                "name": "tiff-converter",
                 "moduleName": "tiff_module",
                 "podType": "regular-m",
                 "runtime": {
