@@ -30,27 +30,27 @@ class ServiceRunner(dl.BaseServiceRunner):
     # Entry point
     # ------------------------------------------------------------------
 
-    def on_create(self, item: dl.Item, context=None, progress=None):
+    def on_create(
+        self,
+        item: dl.Item,
+        extract_metadata: bool = True,
+        extract_thumbnail: bool = True,
+        thumbnail_size: int = DEFAULT_THUMB_SIZE,
+        max_file_size_mb: int = MAX_FILE_SIZE_MB,
+        extract_exif: bool = True,
+        extract_gps: bool = True,
+    ):
         """Process an image item: extract metadata and generate thumbnail.
 
-        Behaviour is controlled via ``context.trigger_input``:
-            extract_metadata   – bool (default True)
-            extract_thumbnail  – bool (default True)
-            max_file_size_mb   – int  (default MAX_FILE_SIZE_MB)
-            default_thumb_size – int  (default DEFAULT_THUMB_SIZE)
         If both extract flags are False, processing is skipped.
         """
 
-        trigger_input = {}
-        if context is not None and hasattr(context, 'trigger_input'):
-            trigger_input = context.trigger_input or {}
-
-        extract_metadata = bool(trigger_input.get('extract_metadata', True))
-        extract_thumbnail = bool(trigger_input.get('extract_thumbnail', True))
-        exif_enabled = bool(trigger_input.get('extract_exif', True))
-        gps_enabled = bool(trigger_input.get('extract_gps', True))
-        max_file_size_mb = int(trigger_input.get('max_file_size_mb', MAX_FILE_SIZE_MB))
-        default_thumb_size = int(trigger_input.get('thumbnail_size', DEFAULT_THUMB_SIZE))
+        extract_metadata = bool(extract_metadata)
+        extract_thumbnail = bool(extract_thumbnail)
+        exif_enabled = bool(extract_exif)
+        gps_enabled = bool(extract_gps)
+        max_file_size_mb = int(max_file_size_mb)
+        default_thumb_size = int(thumbnail_size)
         logger.info(
             f"Config: extract_metadata={extract_metadata} extract_thumbnail={extract_thumbnail} "
             f"exif_enabled={exif_enabled} gps_enabled={gps_enabled}"

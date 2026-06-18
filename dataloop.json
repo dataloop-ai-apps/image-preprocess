@@ -2,7 +2,10 @@
     "name": "image-preprocess-app",
     "displayName": "Image Preprocess App",
     "description": "Image Preprocess Application",
+    "version": "0.0.5",
+    "scope": "public",
     "attributes": {
+        "Category": "Application",
         "Provider": "Dataloop",
         "Application Type": [
             "Preprocess"
@@ -11,8 +14,11 @@
             "Image"
         ]
     },
-    "version": "0.0.1",
-    "scope": "public",
+    "codebase": {
+        "type": "git",
+        "gitUrl": "https://github.com/dataloop-ai-apps/image-preprocess.git",
+        "gitTag": "0.0.0"
+    },
     "components": {
         "modules": [
             {
@@ -28,6 +34,30 @@
                             {
                                 "name": "item",
                                 "type": "Item"
+                            },
+                            {
+                                "name": "extract_metadata",
+                                "type": "Boolean"
+                            },
+                            {
+                                "name": "extract_thumbnail",
+                                "type": "Boolean"
+                            },
+                            {
+                                "name": "thumbnail_size",
+                                "type": "Integer"
+                            },
+                            {
+                                "name": "max_file_size_mb",
+                                "type": "Integer"
+                            },
+                            {
+                                "name": "extract_exif",
+                                "type": "Boolean"
+                            },
+                            {
+                                "name": "extract_gps",
+                                "type": "Boolean"
                             }
                         ],
                         "output": []
@@ -64,6 +94,42 @@
                             {
                                 "name": "item",
                                 "type": "Item"
+                            },
+                            {
+                                "name": "extract_metadata",
+                                "type": "Boolean"
+                            },
+                            {
+                                "name": "extract_thumbnail",
+                                "type": "Boolean"
+                            },
+                            {
+                                "name": "thumbnail_size",
+                                "type": "Integer"
+                            },
+                            {
+                                "name": "max_file_size_mb",
+                                "type": "Integer"
+                            },
+                            {
+                                "name": "extract_exif",
+                                "type": "Boolean"
+                            },
+                            {
+                                "name": "extract_gps",
+                                "type": "Boolean"
+                            },
+                            {
+                                "name": "max_output_dimensions",
+                                "type": "Integer"
+                            },
+                            {
+                                "name": "normalization_percentile",
+                                "type": "Json"
+                            },
+                            {
+                                "name": "vis_bands",
+                                "type": "Json"
                             }
                         ],
                         "output": []
@@ -130,6 +196,7 @@
         "triggers": [
             {
                 "name": "image-preprocess",
+                "namespace": "services.image-preprocess",
                 "type": "Event",
                 "template": true,
                 "activation": {
@@ -168,6 +235,7 @@
             },
             {
                 "name": "image-preprocess-deleted",
+                "namespace": "services.image-preprocess",
                 "type": "Event",
                 "template": true,
                 "activation": {
@@ -198,6 +266,7 @@
             },
             {
                 "name": "tiff-converter",
+                "namespace": "services.tiff-converter",
                 "type": "Event",
                 "template": true,
                 "activation": {
@@ -238,6 +307,7 @@
             },
             {
                 "name": "tiff-converter-deleted",
+                "namespace": "services.tiff-converter",
                 "type": "Event",
                 "template": true,
                 "activation": {

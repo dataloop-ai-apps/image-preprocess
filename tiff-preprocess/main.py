@@ -98,33 +98,37 @@ class ServiceRunner(dl.BaseServiceRunner):
     # Entry point
     # ------------------------------------------------------------------
 
-    def on_create(self, item: dl.Item, context=None, progress: dl.Progress | None = None) -> None:
+    def on_create(
+        self,
+        item: dl.Item,
+        extract_metadata: bool = True,
+        extract_thumbnail: bool = True,
+        thumbnail_size: int = DEFAULT_THUMB_SIZE,
+        max_file_size_mb: int = MAX_FILE_SIZE_MB,
+        extract_exif: bool = True,
+        extract_gps: bool = True,
+        max_output_dimensions: int | None = None,
+        normalization_percentile: list | None = None,
+        vis_bands: list | None = None,
+        context=None,
+        progress: dl.Progress | None = None,
+    ) -> None:
         """Process a TIFF item.
 
-        Behaviour is controlled via ``context.trigger_input``:
-            extract_metadata   – bool (default True)
-            extract_thumbnail  – bool (default True)
-            max_file_size_mb   – int  (default MAX_FILE_SIZE_MB)
-            thumbnail_size – int  (default DEFAULT_THUMB_SIZE)
         If both extract flags are False, processing is skipped.
         """
         if self._should_skip(item):
             return
 
-        trigger_input = {}
-        if context is not None and hasattr(context, 'trigger_input'):
-            trigger_input = context.trigger_input or {}
-
-        self.extract_metadata = bool(trigger_input.get('extract_metadata', True))
-        self.extract_thumbnail = bool(trigger_input.get('extract_thumbnail', True))
-        self.exif_enabled = bool(trigger_input.get('extract_exif', True))
-        self.gps_enabled = bool(trigger_input.get('extract_gps', True))
-        self.max_file_size_mb = int(trigger_input.get('max_file_size_mb', MAX_FILE_SIZE_MB))
-        self.thumbnail_size = int(trigger_input.get('thumbnail_size', DEFAULT_THUMB_SIZE))
-        raw_mod = trigger_input.get('max_output_dimensions', None)
-        self.max_output_dimensions = int(raw_mod) if raw_mod is not None else None
-        self.normalization_percentile = list(trigger_input.get('normalization_percentile', [0, 100]))
-        self.vis_bands = list(trigger_input.get('vis_bands', [1, 2, 3]))
+        self.extract_metadata = bool(extract_metadata)
+        self.extract_thumbnail = bool(extract_thumbnail)
+        self.exif_enabled = bool(extract_exif)
+        self.gps_enabled = bool(extract_gps)
+        self.max_file_size_mb = int(max_file_size_mb)
+        self.thumbnail_size = int(thumbnail_size)
+        self.max_output_dimensions = int(max_output_dimensions) if max_output_dimensions is not None else None
+        self.normalization_percentile = list(normalization_percentile) if normalization_percentile is not None else [0, 100]
+        self.vis_bands = list(vis_bands) if vis_bands is not None else [1, 2, 3]
         logger.info(
             'Processing config: extract_metadata=%s extract_thumbnail=%s '
             'exif_enabled=%s gps_enabled=%s max_file_size_mb=%d '
