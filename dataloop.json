@@ -17,7 +17,7 @@
     "codebase": {
         "type": "git",
         "gitUrl": "https://github.com/dataloop-ai-apps/image-preprocess.git",
-        "gitTag": "0.0.0"
+        "gitTag": "2.1.2"
     },
     "components": {
         "modules": [
