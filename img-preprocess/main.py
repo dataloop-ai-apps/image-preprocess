@@ -13,11 +13,11 @@ import dtlpy as dl
 from PIL import Image, ImageOps
 from PIL.ExifTags import Base, GPS, IFD
 
-from common.etl_errors import record_etl_error
+from common.etl_errors import record_etl_error, active_logger, report_progress
 
 logger = logging.getLogger("image-preprocess")
 
-# Defaults; override per-invocation via context.trigger_input.
+# Defaults; override per-invocation via the trigger input.
 MAX_FILE_SIZE_MB = 100
 DEFAULT_THUMB_SIZE = 128
 
@@ -39,11 +39,17 @@ class ServiceRunner(dl.BaseServiceRunner):
         max_file_size_mb: int = MAX_FILE_SIZE_MB,
         extract_exif: bool = True,
         extract_gps: bool = True,
+        context=None,
+        progress: "dl.Progress" = None,
     ):
         """Process an image item: extract metadata and generate thumbnail.
 
         If both extract flags are False, processing is skipped.
+
+        ``context`` and ``progress`` are injected by the Dataloop runtime; they
+        are optional so the method can also be driven directly (e.g. in tests).
         """
+        log = active_logger(progress, context, default=logger)
 
         extract_metadata = bool(extract_metadata)
         extract_thumbnail = bool(extract_thumbnail)
@@ -51,14 +57,16 @@ class ServiceRunner(dl.BaseServiceRunner):
         gps_enabled = bool(extract_gps)
         max_file_size_mb = int(max_file_size_mb)
         default_thumb_size = int(thumbnail_size)
-        logger.info(
+        log.info(
             f"Config: extract_metadata={extract_metadata} extract_thumbnail={extract_thumbnail} "
             f"exif_enabled={exif_enabled} gps_enabled={gps_enabled}"
         )
 
         if not extract_metadata and not extract_thumbnail:
-            logger.info("Both extract_metadata and extract_thumbnail are False; skipping")
+            log.info("Both extract_metadata and extract_thumbnail are False; skipping")
             return item
+
+        report_progress(progress, message="Validating image", percent=5)
 
         try:
             # Clear stale ETL from previous runs
@@ -68,7 +76,7 @@ class ServiceRunner(dl.BaseServiceRunner):
             mimetype = item.metadata.get("system", {}).get("mimetype", "")
             if not mimetype.startswith("image/"):
                 msg = f"Unsupported mimetype: {mimetype}"
-                logger.error(msg)
+                log.error(msg)
                 record_etl_error(item, stage="validation", error=msg, failed=True)
                 raise ValueError(msg)
 
@@ -76,11 +84,12 @@ class ServiceRunner(dl.BaseServiceRunner):
             file_size = item.metadata.get("system", {}).get("size", 0)
             if file_size > max_file_size_mb * 1024 * 1024:
                 msg = f"File too large: {file_size} bytes exceeds {max_file_size_mb}MB limit"
-                logger.error(msg)
+                log.error(msg)
                 record_etl_error(item, stage="validation", error=msg, failed=True)
                 raise ValueError(msg)
 
             # Download item and open image (single hard-failure path)
+            report_progress(progress, message="Downloading image", percent=20)
             try:
                 buffer = item.download(save_locally=False)
                 if not isinstance(buffer, BytesIO):
@@ -89,7 +98,7 @@ class ServiceRunner(dl.BaseServiceRunner):
                 img = Image.open(buffer)
                 img.load()
             except Exception as e:
-                logger.exception(f"Failed to download/open image from item {item.id}")
+                log.exception(f"Failed to download/open image from item {item.id}")
                 record_etl_error(
                     item,
                     stage="download_open",
@@ -102,24 +111,27 @@ class ServiceRunner(dl.BaseServiceRunner):
                 self.set_image_dimensions(item, img)
 
                 if extract_metadata:
+                    report_progress(progress, message="Extracting metadata", percent=45)
                     try:
                         self.extract_exif(img, item,
                                           exif=exif_enabled, gps=gps_enabled)
                     except Exception as e:
-                        logger.exception(f"Failed to extract EXIF for item {item.id}")
+                        log.exception(f"Failed to extract EXIF for item {item.id}")
                         record_etl_error(item, stage="exif", error=f"Exif extraction failed: {e}")
 
                 # WARNING: thumbnail generation mutates img (resize in-place).
                 # This MUST remain the last step that uses img.
                 if extract_thumbnail:
+                    report_progress(progress, message="Generating thumbnail", percent=70)
                     try:
                         self.create_and_upload_thumbnail(img, item, default_thumb_size)
                     except Exception as e:
-                        logger.exception(f"Failed to generate thumbnail for item {item.id}")
+                        log.exception(f"Failed to generate thumbnail for item {item.id}")
                         record_etl_error(item, stage="thumbnail", error=f"Thumbnail generation failed: {e}")
         finally:
             item = item.update(system_metadata=True)
 
+        report_progress(progress, message="Done", percent=100)
         return item
 
     # ------------------------------------------------------------------

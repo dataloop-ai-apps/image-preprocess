@@ -16,7 +16,7 @@ import rasterio
 import dtlpy as dl
 from PIL import Image
 
-from common.etl_errors import record_etl_error
+from common.etl_errors import record_etl_error, active_logger, report_progress
 
 logger = logging.getLogger("tiff-preprocess")
 
@@ -116,9 +116,14 @@ class ServiceRunner(dl.BaseServiceRunner):
         """Process a TIFF item.
 
         If both extract flags are False, processing is skipped.
+
+        ``context`` and ``progress`` are injected by the Dataloop runtime; they
+        are optional so the method can also be driven directly (e.g. in tests).
         """
+        log = active_logger(progress, context, default=logger)
         if self._should_skip(item):
             return
+        report_progress(progress, message="Validating TIFF", percent=2)
 
         self.extract_metadata = bool(extract_metadata)
         self.extract_thumbnail = bool(extract_thumbnail)
@@ -129,7 +134,7 @@ class ServiceRunner(dl.BaseServiceRunner):
         self.max_output_dimensions = int(max_output_dimensions) if max_output_dimensions is not None else None
         self.normalization_percentile = list(normalization_percentile) if normalization_percentile is not None else [0, 100]
         self.vis_bands = list(vis_bands) if vis_bands is not None else [1, 2, 3]
-        logger.info(
+        log.info(
             'Processing config: extract_metadata=%s extract_thumbnail=%s '
             'exif_enabled=%s gps_enabled=%s max_file_size_mb=%d '
             'thumbnail_size=%d max_output_dimensions=%s normalization_percentile=%s vis_bands=%s',
@@ -140,7 +145,7 @@ class ServiceRunner(dl.BaseServiceRunner):
         )
 
         if not self.extract_metadata and not self.extract_thumbnail:
-            logger.info('Both extract_metadata and extract_thumbnail are False; skipping')
+            log.info('Both extract_metadata and extract_thumbnail are False; skipping')
             return
 
         # Ensure the etl error sink exists; all helpers call record_etl_error directly.
@@ -159,13 +164,16 @@ class ServiceRunner(dl.BaseServiceRunner):
             file_size = item.metadata.get('system', {}).get('size', 0) or 0
             if file_size and file_size > self.max_file_size_mb * 1024 * 1024:
                 msg = 'File too large: {} bytes exceeds {}MB limit'.format(file_size, self.max_file_size_mb)
-                logger.error(msg)
+                log.error(msg)
                 record_etl_error(item, 'size_check', msg, failed=True)
                 raise ValueError(msg)
 
+            report_progress(progress, message="Downloading TIFF", percent=10)
             self._download_item(item)
+            report_progress(progress, message="Inspecting TIFF header", percent=25)
             self._inspect_tiff_header(item)
 
+            report_progress(progress, message="Converting TIFF to PNG", percent=45)
             png_item = self._build_and_upload_png(item)
             self._create_replace_modality(item, png_item)
 
@@ -175,17 +183,19 @@ class ServiceRunner(dl.BaseServiceRunner):
                 height=self.shape[-2],
                 channels=self.shape[-3] if len(self.shape) == 3 else 1,
             )
+            report_progress(progress, message="Writing metadata", percent=75)
             self._apply_legacy_metadata(item)
 
             if self.extract_thumbnail:
+                report_progress(progress, message="Generating thumbnail", percent=85)
                 try:
                     self.generate_thumbnail(item, self.png_image, self.thumbnail_size)
                 except Exception as e:
-                    logger.exception('Thumbnail generation failed for item=%s', item.id)
+                    log.exception('Thumbnail generation failed for item=%s', item.id)
                     record_etl_error(item, 'thumbnail', f'Thumbnail generation failed: {e}')
 
             self._apply_image_etl_metadata(item, self.exif_data)
-            logger.info(
+            log.info(
                 'TIFF conversion complete: item=%s errors=%d',
                 item.id, len(item.metadata['system']['etl']['errors']),
             )
@@ -193,6 +203,7 @@ class ServiceRunner(dl.BaseServiceRunner):
         finally:
             item.update(system_metadata=True)
             self._cleanup_files(self.tiff_filepath)
+            report_progress(progress, message="Done", percent=100)
 
     # ------------------------------------------------------------------
     # Run-step helpers
@@ -820,11 +831,13 @@ class ServiceRunner(dl.BaseServiceRunner):
                 logger.info("item=%s thumbnail already deleted", item.id)
 
         modalities = item.metadata.get("system", {}).get("modalities", []) or []
-        expected_name = item.id + ".png"
+        # The replace modality is created with name='png' (see
+        # _create_replace_modality); match that exactly so the converted PNG is
+        # actually cleaned up rather than orphaned.
         png_id = None
         for modality in modalities:
             if (modality.get("type") == "replace"
-                    and modality.get("name") == expected_name):
+                    and modality.get("name") == "png"):
                 png_id = modality.get("ref")
                 break
         if png_id is not None:

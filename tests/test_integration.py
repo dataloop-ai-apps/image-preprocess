@@ -73,11 +73,14 @@ def test_non_image_mime(mock_dl_item, mock_dl_progress):
 def test_both_extract_flags_false_skips(mock_dl_item, mock_dl_progress):
     """Test 4: extract_metadata=False and extract_thumbnail=False -> skip"""
     item = mock_dl_item(mimetype="image/jpeg")
-    context = MagicMock()
-    context.trigger_input = {"extract_metadata": False, "extract_thumbnail": False}
 
     runner = ServiceRunner()
-    result = runner.on_create(item, context=context, progress=mock_dl_progress)
+    result = runner.on_create(
+        item,
+        extract_metadata=False,
+        extract_thumbnail=False,
+        progress=mock_dl_progress,
+    )
 
     # Should return early without calling download
     assert not item.download.called
@@ -93,11 +96,8 @@ def test_extract_thumbnail_false_skips_thumbnail(mock_dl_item, mock_dl_progress)
 
     item = mock_dl_item(buffer=buf, mimetype="image/jpeg")
 
-    context = MagicMock()
-    context.trigger_input = {"extract_thumbnail": False}
-
     runner = ServiceRunner()
-    runner.on_create(item, context=context, progress=mock_dl_progress)
+    runner.on_create(item, extract_thumbnail=False, progress=mock_dl_progress)
 
     # No thumbnail should be generated
     assert "thumbnailId" not in item.metadata["system"]
@@ -293,7 +293,7 @@ def test_gps_dual_storage(mock_dl_item, mock_dl_progress):
 
 
 def test_default_thumb_size_override(mock_dl_item, mock_dl_progress):
-    """Test 14: default_thumb_size from trigger_input is forwarded to thumbnail"""
+    """Test 14: thumbnail_size is forwarded to thumbnail generation"""
     img = Image.new("RGB", (4032, 3024))
     buf = BytesIO()
     img.save(buf, format="JPEG")
@@ -301,12 +301,9 @@ def test_default_thumb_size_override(mock_dl_item, mock_dl_progress):
 
     item = mock_dl_item(buffer=buf, mimetype="image/jpeg")
 
-    context = MagicMock()
-    context.trigger_input = {"default_thumb_size": 256}
-
     with patch.object(ServiceRunner, 'create_and_upload_thumbnail') as mock_thumb:
         runner = ServiceRunner()
-        runner.on_create(item, context=context, progress=mock_dl_progress)
+        runner.on_create(item, thumbnail_size=256, progress=mock_dl_progress)
 
     mock_thumb.assert_called_once()
     assert mock_thumb.call_args[0][2] == 256

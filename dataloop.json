@@ -2,7 +2,7 @@
     "name": "image-preprocess-app",
     "displayName": "Image Preprocess App",
     "description": "Image Preprocess Application",
-    "version": "0.0.5",
+    "version": "2.1.0",
     "scope": "public",
     "attributes": {
         "Category": "Application",
@@ -179,7 +179,7 @@
                 "podType": "regular-m",
                 "runtime": {
                     "runnerImage": "gcr.io/viewo-g/piper/agent/runner/apps/image-preprocess:0.0.1",
-                    "concurrency": 10,
+                    "concurrency": 1,
                     "autoscaler": {
                         "type": "rabbitmq",
                         "minReplicas": 0,
