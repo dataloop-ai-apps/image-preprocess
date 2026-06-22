@@ -1,0 +1,6 @@
+Pillow>=10.0.0
+numpy>=1.24,<2.0
+# NOTE: GDAL and rasterio are intentionally NOT listed here. They are installed
+# in the Dockerfile from a version-matched index (GDAL pinned to the system
+# libgdal, then rasterio). Adding them here would trigger a conflicting
+# reinstall during the image build. dtlpy is provided by the base runner image.

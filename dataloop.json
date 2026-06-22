@@ -1,0 +1,340 @@
+{
+    "name": "image-preprocess-app",
+    "displayName": "Image Preprocess App",
+    "description": "Image Preprocess Application",
+    "version": "2.1.0",
+    "scope": "public",
+    "attributes": {
+        "Category": "Application",
+        "Provider": "Dataloop",
+        "Application Type": [
+            "Preprocess"
+        ],
+        "Media Type": [
+            "Image"
+        ]
+    },
+    "codebase": {
+        "type": "git",
+        "gitUrl": "https://github.com/dataloop-ai-apps/image-preprocess.git",
+        "gitTag": "0.0.0"
+    },
+    "components": {
+        "modules": [
+            {
+                "name": "img_module",
+                "entryPoint": "img-preprocess/main.py",
+                "className": "ServiceRunner",
+                "initInputs": [],
+                "functions": [
+                    {
+                        "name": "on_create",
+                        "description": "run image preprocess - metadata extraction and thumbnail creation",
+                        "input": [
+                            {
+                                "name": "item",
+                                "type": "Item"
+                            },
+                            {
+                                "name": "extract_metadata",
+                                "type": "Boolean"
+                            },
+                            {
+                                "name": "extract_thumbnail",
+                                "type": "Boolean"
+                            },
+                            {
+                                "name": "thumbnail_size",
+                                "type": "Integer"
+                            },
+                            {
+                                "name": "max_file_size_mb",
+                                "type": "Integer"
+                            },
+                            {
+                                "name": "extract_exif",
+                                "type": "Boolean"
+                            },
+                            {
+                                "name": "extract_gps",
+                                "type": "Boolean"
+                            }
+                        ],
+                        "output": []
+                    },
+                    {
+                        "name": "on_delete",
+                        "description": "cleanup generated thumbnail when source image is deleted",
+                        "input": [
+                            {
+                                "name": "item",
+                                "type": "Item"
+                            }
+                        ],
+                        "output": []
+                    },
+                    {
+                        "name": "test",
+                        "input": [],
+                        "output": [],
+                        "description": "test the package"
+                    }
+                ]
+            },
+            {
+                "name": "tiff_module",
+                "entryPoint": "tiff-preprocess/main.py",
+                "className": "ServiceRunner",
+                "initInputs": [],
+                "functions": [
+                    {
+                        "name": "on_create",
+                        "description": "convert tiff to png",
+                        "input": [
+                            {
+                                "name": "item",
+                                "type": "Item"
+                            },
+                            {
+                                "name": "extract_metadata",
+                                "type": "Boolean"
+                            },
+                            {
+                                "name": "extract_thumbnail",
+                                "type": "Boolean"
+                            },
+                            {
+                                "name": "thumbnail_size",
+                                "type": "Integer"
+                            },
+                            {
+                                "name": "max_file_size_mb",
+                                "type": "Integer"
+                            },
+                            {
+                                "name": "extract_exif",
+                                "type": "Boolean"
+                            },
+                            {
+                                "name": "extract_gps",
+                                "type": "Boolean"
+                            },
+                            {
+                                "name": "max_output_dimensions",
+                                "type": "Integer"
+                            },
+                            {
+                                "name": "normalization_percentile",
+                                "type": "Json"
+                            },
+                            {
+                                "name": "vis_bands",
+                                "type": "Json"
+                            }
+                        ],
+                        "output": []
+                    },
+                    {
+                        "name": "on_delete",
+                        "description": "cleanup generated thumbnail and PNG modality when source TIFF is deleted",
+                        "input": [
+                            {
+                                "name": "item",
+                                "type": "Item"
+                            }
+                        ],
+                        "output": []
+                    },
+                    {
+                        "name": "test",
+                        "input": [],
+                        "output": [],
+                        "description": "convert tiff test"
+                    }
+                ]
+            }
+        ],
+        "services": [
+            {
+                "name": "image-preprocess",
+                "moduleName": "img_module",
+                "podType": "regular-s",
+                "runtime": {
+                    "runnerImage": "gcr.io/viewo-g/piper/agent/runner/apps/image-preprocess:0.0.1",
+                    "concurrency": 2,
+                    "autoscaler": {
+                        "type": "rabbitmq",
+                        "minReplicas": 1,
+                        "maxReplicas": 100,
+                        "queueLength": 20
+                    }
+                },
+                "executionTimeout": 3600,
+                "drainTime": 600,
+                "onReset": "failed"
+            },
+            {
+                "name": "tiff-converter",
+                "moduleName": "tiff_module",
+                "podType": "regular-m",
+                "runtime": {
+                    "runnerImage": "gcr.io/viewo-g/piper/agent/runner/apps/image-preprocess:0.0.1",
+                    "concurrency": 1,
+                    "autoscaler": {
+                        "type": "rabbitmq",
+                        "minReplicas": 0,
+                        "maxReplicas": 19,
+                        "queueLength": 30
+                    },
+                    "preemptible": true
+                },
+                "executionTimeout": 3600,
+                "drainTime": 600,
+                "onReset": "rerun"
+            }
+        ],
+        "triggers": [
+            {
+                "name": "image-preprocess",
+                "namespace": "services.image-preprocess",
+                "type": "Event",
+                "template": true,
+                "activation": {
+                    "autoClone": true,
+                    "cloneActiveDefault": true,
+                    "overridable": false
+                },
+                "applyOnExistingProjects": true,
+                "activateOnExistingProjects": false,
+                "spec": {
+                    "resource": "Item",
+                    "actions": ["Created", "Clone"],
+                    "executionMode": "Once",
+                    "filter": {
+                        "$and": [
+                            {"metadata.system.mimetype": "image/*"},
+                            {"metadata.system.mimetype": {"$ne": "image/tiff"}},
+                            {"hidden": false},
+                            {"type": "file"}
+                        ]
+                    },
+                    "operation": {
+                        "type": "function",
+                        "functionName": "on_create",
+                        "serviceName": "image-preprocess"
+                    },
+                    "input": {
+                        "extract_metadata": true,
+                        "extract_thumbnail": true,
+                        "thumbnail_size": 128,
+                        "max_file_size_mb": 100,
+                        "extract_exif": true,
+                        "extract_gps": true
+                    }
+                }
+            },
+            {
+                "name": "image-preprocess-deleted",
+                "namespace": "services.image-preprocess",
+                "type": "Event",
+                "template": true,
+                "activation": {
+                    "autoClone": true,
+                    "cloneActiveDefault": true,
+                    "overridable": false
+                },
+                "applyOnExistingProjects": true,
+                "activateOnExistingProjects": false,
+                "spec": {
+                    "resource": "Item",
+                    "actions": ["Deleted"],
+                    "executionMode": "Once",
+                    "filter": {
+                        "$and": [
+                            {"metadata.system.mimetype": "image/*"},
+                            {"metadata.system.mimetype": {"$ne": "image/tiff"}},
+                            {"type": "file"}
+                        ]
+                    },
+                    "operation": {
+                        "type": "function",
+                        "functionName": "on_delete",
+                        "serviceName": "image-preprocess"
+                    },
+                    "input": {}
+                }
+            },
+            {
+                "name": "tiff-converter",
+                "namespace": "services.tiff-converter",
+                "type": "Event",
+                "template": true,
+                "activation": {
+                    "autoClone": true,
+                    "cloneActiveDefault": true,
+                    "overridable": false
+                },
+                "applyOnExistingProjects": true,
+                "activateOnExistingProjects": false,
+                "spec": {
+                    "resource": "Item",
+                    "actions": ["Created"],
+                    "executionMode": "Once",
+                    "filter": {
+                        "$and": [
+                            {"metadata.system.mimetype": "image/tiff"},
+                            {"hidden": false},
+                            {"type": "file"}
+                        ]
+                    },
+                    "operation": {
+                        "type": "function",
+                        "functionName": "on_create",
+                        "serviceName": "tiff-converter"
+                    },
+                    "input": {
+                        "extract_metadata": true,
+                        "extract_thumbnail": true,
+                        "thumbnail_size": 128,
+                        "max_file_size_mb": 2000,
+                        "max_output_dimensions": null,
+                        "normalization_percentile": [0, 100],
+                        "vis_bands": [1, 2, 3],
+                        "extract_exif": true,
+                        "extract_gps": true
+                    }
+                }
+            },
+            {
+                "name": "tiff-converter-deleted",
+                "namespace": "services.tiff-converter",
+                "type": "Event",
+                "template": true,
+                "activation": {
+                    "autoClone": true,
+                    "cloneActiveDefault": true,
+                    "overridable": false
+                },
+                "applyOnExistingProjects": true,
+                "activateOnExistingProjects": false,
+                "spec": {
+                    "resource": "Item",
+                    "actions": ["Deleted"],
+                    "executionMode": "Once",
+                    "filter": {
+                        "$and": [
+                            {"metadata.system.mimetype": "image/tiff"},
+                            {"type": "file"}
+                        ]
+                    },
+                    "operation": {
+                        "type": "function",
+                        "functionName": "on_delete",
+                        "serviceName": "tiff-converter"
+                    },
+                    "input": {}
+                }
+            }
+        ]
+    }
+}
