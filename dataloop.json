@@ -169,6 +169,7 @@
                         "queueLength": 20
                     }
                 },
+                "botUserName": "pipelines@dataloop.ai",
                 "executionTimeout": 3600,
                 "drainTime": 600,
                 "onReset": "failed"
@@ -199,6 +200,7 @@
                 "namespace": "services.image-preprocess",
                 "type": "Event",
                 "scope": "system",
+                "active": true,
                 "template": true,
                 "activation": {
                     "autoClone": true,
@@ -239,6 +241,7 @@
                 "namespace": "services.image-preprocess",
                 "type": "Event",
                 "scope": "system",
+                "active": true,
                 "template": true,
                 "activation": {
                     "autoClone": true,
@@ -271,6 +274,7 @@
                 "namespace": "services.tiff-converter",
                 "type": "Event",
                 "scope": "system",
+                "active": true,
                 "template": true,
                 "activation": {
                     "autoClone": true,
@@ -312,6 +316,7 @@
                 "name": "tiff-converter-deleted",
                 "namespace": "services.tiff-converter",
                 "type": "Event",
+                "active": true,
                 "scope": "system",
                 "template": true,
                 "activation": {
