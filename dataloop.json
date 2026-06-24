@@ -2,7 +2,7 @@
     "name": "image-preprocess-app",
     "displayName": "Image Preprocess App",
     "description": "Image Preprocess Application",
-    "version": "2.1.5",
+    "version": "2.1.6",
     "scope": "public",
     "attributes": {
         "Category": "Application",
@@ -17,7 +17,7 @@
     "codebase": {
         "type": "git",
         "gitUrl": "https://github.com/dataloop-ai-apps/image-preprocess.git",
-        "gitTag": "2.1.5"
+        "gitTag": "2.1.6"
     },
     "components": {
         "modules": [
