@@ -189,6 +189,7 @@
                     },
                     "preemptible": true
                 },
+                "botUserName": "pipelines@dataloop.ai",
                 "executionTimeout": 3600,
                 "drainTime": 600,
                 "onReset": "rerun"
