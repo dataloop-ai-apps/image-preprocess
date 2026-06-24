@@ -201,7 +201,7 @@
                 "namespace": "services.image-preprocess",
                 "type": "Event",
                 "scope": "system",
-                "active": true,
+                "active": false,
                 "template": true,
                 "activation": {
                     "autoClone": true,
@@ -242,7 +242,7 @@
                 "namespace": "services.image-preprocess",
                 "type": "Event",
                 "scope": "system",
-                "active": true,
+                "active": false,
                 "template": true,
                 "activation": {
                     "autoClone": true,
@@ -275,7 +275,7 @@
                 "namespace": "services.tiff-converter",
                 "type": "Event",
                 "scope": "system",
-                "active": true,
+                "active": false,
                 "template": true,
                 "activation": {
                     "autoClone": true,
@@ -317,7 +317,7 @@
                 "name": "tiff-converter-deleted",
                 "namespace": "services.tiff-converter",
                 "type": "Event",
-                "active": true,
+                "active": false,
                 "scope": "system",
                 "template": true,
                 "activation": {
