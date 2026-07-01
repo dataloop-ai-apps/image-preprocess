@@ -103,7 +103,6 @@ class TiffProcessingContext:
         self.tiff_meta: dict = {}
         self.shape: tuple | None = None
         self.dims: dict | None = None
-        self.file_size: int = 0
 
 
 class ServiceRunner(dl.BaseServiceRunner):
@@ -222,9 +221,8 @@ class ServiceRunner(dl.BaseServiceRunner):
             logger.error(msg)
             record_etl_error(ctx.item, 'download', msg, failed=True)
             raise RuntimeError(msg)
-        ctx.file_size = os.path.getsize(ctx.tiff_filepath)
-        logger.info('Downloaded TIFF: item=%s name=%s path=%s size=%d bytes',
-                    ctx.item.id, ctx.item.name, ctx.tiff_filepath, ctx.file_size)
+        logger.info('Downloaded TIFF: item=%s name=%s path=%s',
+                    ctx.item.id, ctx.item.name, ctx.tiff_filepath)
 
     def _inspect_tiff_header(self, ctx: TiffProcessingContext) -> None:
         """PIL-open the TIFF (lazy, header-only) and probe bit depth + EXIF.
@@ -326,9 +324,10 @@ class ServiceRunner(dl.BaseServiceRunner):
         ctx.item.metadata['system']['height'] = ctx.dims['height']
         ctx.item.metadata['system']['width'] = ctx.dims['width']
         ctx.item.metadata['system']['channels'] = ctx.dims['channels']
-        ctx.item.metadata['system']['size'] = ctx.file_size
+        ctx.item.metadata['system']['size'] = os.path.getsize(ctx.tiff_filepath)
         logger.info('Legacy metadata: width=%s height=%s channels=%s size=%d bytes',
-                    ctx.dims['width'], ctx.dims['height'], ctx.dims['channels'], ctx.file_size)
+                    ctx.dims['width'], ctx.dims['height'], ctx.dims['channels'],
+                    ctx.item.metadata['system']['size'])
 
     def _apply_image_etl_metadata(self, ctx: TiffProcessingContext) -> None:
         """Update the Rubiks-aligned `imageEtl` block without overriding existing keys.
