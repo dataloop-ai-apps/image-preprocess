@@ -161,7 +161,7 @@
                 "podType": "regular-s",
                 "runtime": {
                     "runnerImage": "gcr.io/viewo-g/piper/agent/runner/apps/image-preprocess:0.0.1",
-                    "concurrency": 2,
+                    "concurrency": 10,
                     "autoscaler": {
                         "type": "rabbitmq",
                         "minReplicas": 1,
@@ -180,7 +180,7 @@
                 "podType": "regular-m",
                 "runtime": {
                     "runnerImage": "gcr.io/viewo-g/piper/agent/runner/apps/image-preprocess:0.0.1",
-                    "concurrency": 1,
+                    "concurrency": 10,
                     "autoscaler": {
                         "type": "rabbitmq",
                         "minReplicas": 0,
