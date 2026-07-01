@@ -103,6 +103,7 @@ class TiffProcessingContext:
         self.tiff_meta: dict = {}
         self.shape: tuple | None = None
         self.dims: dict | None = None
+        self.file_size: int = 0
 
 
 class ServiceRunner(dl.BaseServiceRunner):
@@ -177,14 +178,6 @@ class ServiceRunner(dl.BaseServiceRunner):
         ctx.item.metadata.setdefault('system', {}).setdefault('etl', {}).setdefault('errors', [])
 
         try:
-            # File size guard (uses platform-reported size to avoid downloading huge files).
-            file_size = ctx.item.metadata.get('system', {}).get('size', 0) or 0
-            if file_size and file_size > ctx.max_file_size_mb * 1024 * 1024:
-                msg = 'File too large: {} bytes exceeds {}MB limit'.format(file_size, ctx.max_file_size_mb)
-                log.error(msg)
-                record_etl_error(ctx.item, 'size_check', msg, failed=True)
-                raise ValueError(msg)
-
             report_progress(progress, message="Downloading TIFF", percent=10)
             self._download_item(ctx)
             report_progress(progress, message="Inspecting TIFF header", percent=25)
@@ -224,10 +217,14 @@ class ServiceRunner(dl.BaseServiceRunner):
     def _download_item(self, ctx: TiffProcessingContext) -> None:
         """Download the TIFF to disk and store its path in ``ctx.tiff_filepath``."""
         ctx.tiff_filepath = ctx.item.download(overwrite=True)
-        size_mb = (os.path.getsize(ctx.tiff_filepath) / (1024 * 1024)
-                   if os.path.isfile(ctx.tiff_filepath) else -1)
-        logger.info('Downloaded TIFF: item=%s name=%s path=%s size=%.2fMB',
-                    ctx.item.id, ctx.item.name, ctx.tiff_filepath, size_mb)
+        if not ctx.tiff_filepath or not os.path.isfile(ctx.tiff_filepath):
+            msg = f"Download failed: file not found at {ctx.tiff_filepath}"
+            logger.error(msg)
+            record_etl_error(ctx.item, 'download', msg, failed=True)
+            raise RuntimeError(msg)
+        ctx.file_size = os.path.getsize(ctx.tiff_filepath)
+        logger.info('Downloaded TIFF: item=%s name=%s path=%s size=%d bytes',
+                    ctx.item.id, ctx.item.name, ctx.tiff_filepath, ctx.file_size)
 
     def _inspect_tiff_header(self, ctx: TiffProcessingContext) -> None:
         """PIL-open the TIFF (lazy, header-only) and probe bit depth + EXIF.
@@ -329,8 +326,9 @@ class ServiceRunner(dl.BaseServiceRunner):
         ctx.item.metadata['system']['height'] = ctx.dims['height']
         ctx.item.metadata['system']['width'] = ctx.dims['width']
         ctx.item.metadata['system']['channels'] = ctx.dims['channels']
-        logger.info('Legacy metadata: width=%s height=%s channels=%s',
-                    ctx.dims['width'], ctx.dims['height'], ctx.dims['channels'])
+        ctx.item.metadata['system']['size'] = ctx.file_size
+        logger.info('Legacy metadata: width=%s height=%s channels=%s size=%d bytes',
+                    ctx.dims['width'], ctx.dims['height'], ctx.dims['channels'], ctx.file_size)
 
     def _apply_image_etl_metadata(self, ctx: TiffProcessingContext) -> None:
         """Update the Rubiks-aligned `imageEtl` block without overriding existing keys.

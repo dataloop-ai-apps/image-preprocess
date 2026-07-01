@@ -80,14 +80,6 @@ class ServiceRunner(dl.BaseServiceRunner):
                 record_etl_error(item, stage="validation", error=msg, failed=True)
                 raise ValueError(msg)
 
-            # Reject files exceeding size limit
-            file_size = item.metadata.get("system", {}).get("size", 0)
-            if file_size > max_file_size_mb * 1024 * 1024:
-                msg = f"File too large: {file_size} bytes exceeds {max_file_size_mb}MB limit"
-                log.error(msg)
-                record_etl_error(item, stage="validation", error=msg, failed=True)
-                raise ValueError(msg)
-
             # Download item and open image (single hard-failure path)
             report_progress(progress, message="Downloading image", percent=20)
             try:
@@ -108,10 +100,10 @@ class ServiceRunner(dl.BaseServiceRunner):
                 raise
 
             with buffer, img:
-                self.set_image_dimensions(item, img)
-
                 if extract_metadata:
                     report_progress(progress, message="Extracting metadata", percent=45)
+                    item.metadata["system"]["size"] = buffer.getbuffer().nbytes
+                    self.set_image_dimensions(item, img)
                     try:
                         self.extract_exif(img, item,
                                           exif=exif_enabled, gps=gps_enabled)
