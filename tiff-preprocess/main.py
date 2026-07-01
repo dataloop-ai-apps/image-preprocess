@@ -64,13 +64,37 @@ SKIP_DATASET_FLAG = 'skipTiffConversion'
 _PERCENTILE_MAX_SAMPLES = 5_000_000
 
 
-class ServiceRunner(dl.BaseServiceRunner):
+class TiffProcessingContext:
+    """Per-item processing state.  Created at the start of every
+    ``on_create`` call so that ``ServiceRunner`` remains stateless and
+    safe for concurrent / reentrant use."""
 
-    def __init__(self, **kwargs):
-        # Disable PIL's decompression bomb safety: TIFFs are legitimately huge.
-        Image.MAX_IMAGE_PIXELS = None
-        # Per-run state. Reset at the start of every on_create().
-        # NOTE: this makes ServiceRunner non-reentrant — one item per worker at a time.
+    def __init__(
+        self,
+        item: dl.Item,
+        extract_metadata=True,
+        extract_thumbnail=True,
+        exif_enabled=True,
+        gps_enabled=True,
+        max_file_size_mb=MAX_FILE_SIZE_MB,
+        thumbnail_size=DEFAULT_THUMB_SIZE,
+        max_output_dimensions=None,
+        normalization_percentile=None,
+        vis_bands=None,
+    ):
+        # The Dataloop item being processed
+        self.item: dl.Item = item
+        # Config (from on_create params) — type coercion and None handling
+        self.extract_metadata: bool = bool(extract_metadata)
+        self.extract_thumbnail: bool = bool(extract_thumbnail)
+        self.exif_enabled: bool = bool(exif_enabled)
+        self.gps_enabled: bool = bool(gps_enabled)
+        self.max_file_size_mb: int = int(max_file_size_mb)
+        self.thumbnail_size: int = int(thumbnail_size)
+        self.max_output_dimensions: int | None = int(max_output_dimensions) if max_output_dimensions is not None else None
+        self.normalization_percentile: list = list(normalization_percentile) if normalization_percentile is not None else [0, 100]
+        self.vis_bands: list = list(vis_bands) if vis_bands is not None else [1, 2, 3]
+        # Per-item mutable state
         self.tiff_filepath: str | None = None
         self.png_image: Image.Image | None = None
         self.pil_image: Image.Image | None = None
@@ -79,15 +103,13 @@ class ServiceRunner(dl.BaseServiceRunner):
         self.tiff_meta: dict = {}
         self.shape: tuple | None = None
         self.dims: dict | None = None
-        self.extract_metadata: bool = True
-        self.extract_thumbnail: bool = True
-        self.exif_enabled: bool = True
-        self.gps_enabled: bool = True
-        self.max_file_size_mb: int = MAX_FILE_SIZE_MB
-        self.thumbnail_size: int = DEFAULT_THUMB_SIZE
-        self.max_output_dimensions: int | None = None
-        self.normalization_percentile: list = [0, 100]
-        self.vis_bands: list = [1, 2, 3]
+
+
+class ServiceRunner(dl.BaseServiceRunner):
+
+    def __init__(self, **kwargs):
+        # Disable PIL's decompression bomb safety: TIFFs are legitimately huge.
+        Image.MAX_IMAGE_PIXELS = None
         logger.info(
             'ServiceRunner initialized: thumb_size=%d, max_file_size_mb=%d',
             DEFAULT_THUMB_SIZE, MAX_FILE_SIZE_MB,
@@ -125,104 +147,94 @@ class ServiceRunner(dl.BaseServiceRunner):
             return
         report_progress(progress, message="Validating TIFF", percent=2)
 
-        self.extract_metadata = bool(extract_metadata)
-        self.extract_thumbnail = bool(extract_thumbnail)
-        self.exif_enabled = bool(extract_exif)
-        self.gps_enabled = bool(extract_gps)
-        self.max_file_size_mb = int(max_file_size_mb)
-        self.thumbnail_size = int(thumbnail_size)
-        self.max_output_dimensions = int(max_output_dimensions) if max_output_dimensions is not None else None
-        self.normalization_percentile = list(normalization_percentile) if normalization_percentile is not None else [0, 100]
-        self.vis_bands = list(vis_bands) if vis_bands is not None else [1, 2, 3]
+        ctx = TiffProcessingContext(
+            item=item,
+            extract_metadata=extract_metadata,
+            extract_thumbnail=extract_thumbnail,
+            exif_enabled=extract_exif,
+            gps_enabled=extract_gps,
+            max_file_size_mb=max_file_size_mb,
+            thumbnail_size=thumbnail_size,
+            max_output_dimensions=max_output_dimensions,
+            normalization_percentile=normalization_percentile,
+            vis_bands=vis_bands,
+        )
         log.info(
             'Processing config: extract_metadata=%s extract_thumbnail=%s '
             'exif_enabled=%s gps_enabled=%s max_file_size_mb=%d '
             'thumbnail_size=%d max_output_dimensions=%s normalization_percentile=%s vis_bands=%s',
-            self.extract_metadata, self.extract_thumbnail,
-            self.exif_enabled, self.gps_enabled, self.max_file_size_mb,
-            self.thumbnail_size, self.max_output_dimensions,
-            self.normalization_percentile, self.vis_bands,
+            ctx.extract_metadata, ctx.extract_thumbnail,
+            ctx.exif_enabled, ctx.gps_enabled, ctx.max_file_size_mb,
+            ctx.thumbnail_size, ctx.max_output_dimensions,
+            ctx.normalization_percentile, ctx.vis_bands,
         )
 
-        if not self.extract_metadata and not self.extract_thumbnail:
+        if not ctx.extract_metadata and not ctx.extract_thumbnail:
             log.info('Both extract_metadata and extract_thumbnail are False; skipping')
             return
 
         # Ensure the etl error sink exists; all helpers call record_etl_error directly.
-        item.metadata.setdefault('system', {}).setdefault('etl', {}).setdefault('errors', [])
-        self.tiff_filepath = None
-        self.png_image = None
-        self.pil_image = None
-        self.is_multibit = True
-        self.exif_data = {'exif': {}, 'location': {}}
-        self.tiff_meta = {}
-        self.shape = None
-        self.dims = None
+        ctx.item.metadata.setdefault('system', {}).setdefault('etl', {}).setdefault('errors', [])
 
         try:
             # File size guard (uses platform-reported size to avoid downloading huge files).
-            file_size = item.metadata.get('system', {}).get('size', 0) or 0
-            if file_size and file_size > self.max_file_size_mb * 1024 * 1024:
-                msg = 'File too large: {} bytes exceeds {}MB limit'.format(file_size, self.max_file_size_mb)
+            file_size = ctx.item.metadata.get('system', {}).get('size', 0) or 0
+            if file_size and file_size > ctx.max_file_size_mb * 1024 * 1024:
+                msg = 'File too large: {} bytes exceeds {}MB limit'.format(file_size, ctx.max_file_size_mb)
                 log.error(msg)
-                record_etl_error(item, 'size_check', msg, failed=True)
+                record_etl_error(ctx.item, 'size_check', msg, failed=True)
                 raise ValueError(msg)
 
             report_progress(progress, message="Downloading TIFF", percent=10)
-            self._download_item(item)
+            self._download_item(ctx)
             report_progress(progress, message="Inspecting TIFF header", percent=25)
-            self._inspect_tiff_header(item)
+            self._inspect_tiff_header(ctx)
 
             report_progress(progress, message="Converting TIFF to PNG", percent=45)
-            png_item = self._build_and_upload_png(item)
-            self._create_replace_modality(item, png_item)
+            png_item = self._build_and_upload_png(ctx)
+            self._create_replace_modality(ctx, png_item)
 
-            self.dims = self.validate_dimensions(
-                item=item,
-                width=self.shape[-1],
-                height=self.shape[-2],
-                channels=self.shape[-3] if len(self.shape) == 3 else 1,
-            )
+            self.validate_dimensions(ctx)
             report_progress(progress, message="Writing metadata", percent=75)
-            self._apply_legacy_metadata(item)
+            self._apply_legacy_metadata(ctx)
 
-            if self.extract_thumbnail:
+            if ctx.extract_thumbnail:
                 report_progress(progress, message="Generating thumbnail", percent=85)
                 try:
-                    self.generate_thumbnail(item, self.png_image, self.thumbnail_size)
+                    self.generate_thumbnail(ctx)
                 except Exception as e:
-                    log.exception('Thumbnail generation failed for item=%s', item.id)
-                    record_etl_error(item, 'thumbnail', f'Thumbnail generation failed: {e}')
+                    log.exception('Thumbnail generation failed for item=%s', ctx.item.id)
+                    record_etl_error(ctx.item, 'thumbnail', f'Thumbnail generation failed: {e}')
 
-            self._apply_image_etl_metadata(item, self.exif_data)
+            self._apply_image_etl_metadata(ctx)
             log.info(
                 'TIFF conversion complete: item=%s errors=%d',
-                item.id, len(item.metadata['system']['etl']['errors']),
+                ctx.item.id, len(ctx.item.metadata['system']['etl']['errors']),
             )
 
         finally:
-            item.update(system_metadata=True)
-            self._cleanup_files(self.tiff_filepath)
+            ctx.item.update(system_metadata=True)
+            self._cleanup_files(ctx)
             report_progress(progress, message="Done", percent=100)
 
     # ------------------------------------------------------------------
     # Run-step helpers
     # ------------------------------------------------------------------
 
-    def _download_item(self, item: dl.Item) -> None:
-        """Download the TIFF to disk and store its path in ``self.tiff_filepath``."""
-        self.tiff_filepath = item.download(overwrite=True)
-        size_mb = (os.path.getsize(self.tiff_filepath) / (1024 * 1024)
-                   if os.path.isfile(self.tiff_filepath) else -1)
+    def _download_item(self, ctx: TiffProcessingContext) -> None:
+        """Download the TIFF to disk and store its path in ``ctx.tiff_filepath``."""
+        ctx.tiff_filepath = ctx.item.download(overwrite=True)
+        size_mb = (os.path.getsize(ctx.tiff_filepath) / (1024 * 1024)
+                   if os.path.isfile(ctx.tiff_filepath) else -1)
         logger.info('Downloaded TIFF: item=%s name=%s path=%s size=%.2fMB',
-                    item.id, item.name, self.tiff_filepath, size_mb)
+                    ctx.item.id, ctx.item.name, ctx.tiff_filepath, size_mb)
 
-    def _inspect_tiff_header(self, item: dl.Item) -> None:
+    def _inspect_tiff_header(self, ctx: TiffProcessingContext) -> None:
         """PIL-open the TIFF (lazy, header-only) and probe bit depth + EXIF.
 
         ``Image.open`` only reads the header — pixel data stays on disk until
         accessed. EXIF is fetched once and shared with the bit-depth probe.
-        Results are stored on ``self`` (``pil_image``, ``is_multibit``,
+        Results are stored on ``ctx`` (``pil_image``, ``is_multibit``,
         ``exif_data``).
         """
         # Lazy open: PIL reads ONLY the TIFF header here (a few KB).
@@ -230,73 +242,73 @@ class ServiceRunner(dl.BaseServiceRunner):
         # decoded on demand (e.g. when calling .load(), .convert(), .getdata(),
         # or iterating pixels). For huge TIFFs this keeps memory usage flat.
         try:
-            self.pil_image = Image.open(self.tiff_filepath)
+            ctx.pil_image = Image.open(ctx.tiff_filepath)
         except Exception as pil_err:
             logger.warning('PIL could not open file, using rasterio-only path: %s', pil_err)
-            record_etl_error(item, 'pil_open', str(pil_err))
-            self.pil_image = None
-            self.is_multibit = True
-            self.exif_data = {'exif': {}, 'location': {}}
+            record_etl_error(ctx.item, 'pil_open', str(pil_err))
+            ctx.pil_image = None
+            ctx.is_multibit = True
+            ctx.exif_data = {'exif': {}, 'location': {}}
             return
 
         logger.debug('PIL open: mode=%s size=%s (WxH) format=%s',
-                     self.pil_image.mode, self.pil_image.size, self.pil_image.format)
-        exifdata = self.read_exif_tags(item, self.pil_image)
-        self.is_multibit = self._get_bits_per_sample(item, exifdata)
-        if self.extract_metadata:
-            self.exif_data = self.extract_exif(item, exifdata,
-                                              exif=self.exif_enabled,
-                                              gps=self.gps_enabled)
+                     ctx.pil_image.mode, ctx.pil_image.size, ctx.pil_image.format)
+        exifdata = self.read_exif_tags(ctx.item, ctx.pil_image)
+        ctx.is_multibit = self._get_bits_per_sample(ctx.item, exifdata)
+        if ctx.extract_metadata:
+            ctx.exif_data = self.extract_exif(ctx.item, exifdata,
+                                              exif=ctx.exif_enabled,
+                                              gps=ctx.gps_enabled)
 
 
-    def _build_and_upload_png(self, item: dl.Item) -> dl.Item:
+    def _build_and_upload_png(self, ctx: TiffProcessingContext) -> dl.Item:
         """Convert the TIFF to PNG in memory and upload it with originating-TIFF metadata.
 
-        Stores ``shape``, ``tiff_meta`` and the converted PIL image on ``self``
-        (as ``self.png_image``) so downstream consumers (thumbnail) can reuse
+        Stores ``shape``, ``tiff_meta`` and the converted PIL image on ``ctx``
+        (as ``ctx.png_image``) so downstream consumers (thumbnail) can reuse
         it without a disk roundtrip.
         """
-        if self.is_multibit:
-            self.png_image, self.shape, self.tiff_meta = self._normalize_multibit(self.tiff_filepath)
+        if ctx.is_multibit:
+            ctx.png_image, ctx.shape, ctx.tiff_meta = self._normalize_multibit(ctx)
             logger.info('Multibit conversion: size=%s mode=%s shape=%s',
-                        self.png_image.size, self.png_image.mode, self.shape)
+                        ctx.png_image.size, ctx.png_image.mode, ctx.shape)
         else:
-            self.png_image, self.shape, self.tiff_meta = self._convert_onebit(self.pil_image)
+            ctx.png_image, ctx.shape, ctx.tiff_meta = self._convert_onebit(ctx)
             logger.info('1-bit conversion: size=%s mode=%s shape=%s',
-                        self.png_image.size, self.png_image.mode, self.shape)
+                        ctx.png_image.size, ctx.png_image.mode, ctx.shape)
 
         # Downscale the PNG modality if it exceeds max_output_dimensions.
-        if self.max_output_dimensions is not None:
-            w, h = self.png_image.size
-            if w > self.max_output_dimensions or h > self.max_output_dimensions:
+        if ctx.max_output_dimensions is not None:
+            w, h = ctx.png_image.size
+            if w > ctx.max_output_dimensions or h > ctx.max_output_dimensions:
                 logger.info('Resizing PNG modality from %dx%d to fit %d',
-                            w, h, self.max_output_dimensions)
-                self.png_image.thumbnail(
-                    (self.max_output_dimensions, self.max_output_dimensions),
+                            w, h, ctx.max_output_dimensions)
+                ctx.png_image.thumbnail(
+                    (ctx.max_output_dimensions, ctx.max_output_dimensions),
                     Image.Resampling.LANCZOS,
                 )
 
-        remote_path = os.path.dirname(item.filename)
+        remote_path = os.path.dirname(ctx.item.filename)
         buf = BytesIO()
-        self.png_image.save(buf, format='PNG')
+        ctx.png_image.save(buf, format='PNG')
         buf.seek(0)
-        png_item = item.dataset.items.upload(
+        png_item = ctx.item.dataset.items.upload(
             local_path=buf,
             remote_path='/.dataloop/tiff-converter' + remote_path,
-            remote_name='{}.png'.format(item.id),
+            remote_name='{}.png'.format(ctx.item.id),
         )
         if 'system' not in png_item.metadata:
             png_item.metadata['system'] = {}
         png_item.metadata['system']['tiff'] = {
-            'originalItem': item.id,
-            'tiffMetadata': self.tiff_meta,
+            'originalItem': ctx.item.id,
+            'tiffMetadata': ctx.tiff_meta,
         }
         png_item.update(system_metadata=True)
         return png_item
 
     @staticmethod
-    def _create_replace_modality(item: dl.Item, png_item: dl.Item) -> None:
-        item.modalities.create(
+    def _create_replace_modality(ctx: 'TiffProcessingContext', png_item: dl.Item) -> None:
+        ctx.item.modalities.create(
             name='png',
             ref=png_item.id,
             ref_type=dl.MODALITY_REF_TYPE_ID,
@@ -304,37 +316,37 @@ class ServiceRunner(dl.BaseServiceRunner):
             timestamp=datetime.datetime.now().isoformat(),
         )
 
-    def _apply_legacy_metadata(self, item: dl.Item) -> None:
+    def _apply_legacy_metadata(self, ctx: TiffProcessingContext) -> None:
         """Write legacy (top-level) system metadata fields for backward compat."""
-        if self.extract_metadata is False:
+        if ctx.extract_metadata is False:
             return
-        if 'system' not in item.metadata:
-            item.metadata['system'] = {}
-        item.metadata['system']['tiff'] = {
-            'originalItem': item.id,
-            'tiffMetadata': self.tiff_meta,
+        if 'system' not in ctx.item.metadata:
+            ctx.item.metadata['system'] = {}
+        ctx.item.metadata['system']['tiff'] = {
+            'originalItem': ctx.item.id,
+            'tiffMetadata': ctx.tiff_meta,
         }
-        item.metadata['system']['height'] = self.dims['height']
-        item.metadata['system']['width'] = self.dims['width']
-        item.metadata['system']['channels'] = self.dims['channels']
+        ctx.item.metadata['system']['height'] = ctx.dims['height']
+        ctx.item.metadata['system']['width'] = ctx.dims['width']
+        ctx.item.metadata['system']['channels'] = ctx.dims['channels']
         logger.info('Legacy metadata: width=%s height=%s channels=%s',
-                    self.dims['width'], self.dims['height'], self.dims['channels'])
+                    ctx.dims['width'], ctx.dims['height'], ctx.dims['channels'])
 
-    def _apply_image_etl_metadata(self, item, exif_data) -> None:
+    def _apply_image_etl_metadata(self, ctx: TiffProcessingContext) -> None:
         """Update the Rubiks-aligned `imageEtl` block without overriding existing keys.
 
         Merges width/height/channels/exif/location into any existing
         ``imageEtl`` block (e.g. an ``etl`` sub-block populated elsewhere).
         """
-        if self.extract_metadata is False:
+        if ctx.extract_metadata is False:
             return
-        image_etl = item.metadata['system'].setdefault('imageEtl', {})
+        image_etl = ctx.item.metadata['system'].setdefault('imageEtl', {})
         image_etl.update({
-            'width': self.dims['width'],
-            'height': self.dims['height'],
-            'channels': self.dims['channels'],
-            'exif': exif_data.get('exif', {}),
-            'location': exif_data.get('location', {}),
+            'width': ctx.dims['width'],
+            'height': ctx.dims['height'],
+            'channels': ctx.dims['channels'],
+            'exif': ctx.exif_data.get('exif', {}),
+            'location': ctx.exif_data.get('location', {}),
         })
 
 
@@ -387,22 +399,22 @@ class ServiceRunner(dl.BaseServiceRunner):
     # Conversion paths
     # ------------------------------------------------------------------
 
-    def _normalize_multibit(self, tiff_path: str) -> tuple[Image.Image, tuple, dict]:
+    def _normalize_multibit(self, ctx: TiffProcessingContext) -> tuple[Image.Image, tuple, dict]:
         """Normalize pixel values to uint8 using windowed (chunked) reads.
 
         Uses two-pass block-by-block streaming so the full raster is never
-        materialised in memory.  Bands are selected via ``self.vis_bands``
+        materialised in memory.  Bands are selected via ``ctx.vis_bands``
         (1-indexed); any indices that exceed the file's band count are
         silently dropped.  The returned *shape* still reflects the original
         band count so that channels metadata stays accurate.
 
-        When ``self.normalization_percentile`` differs from ``[0, 100]``,
+        When ``ctx.normalization_percentile`` differs from ``[0, 100]``,
         percentile clipping is used instead of raw min/max to compute the
         mapping range (more robust to outliers in satellite/aerial imagery).
         """
-        logger.info('Opening with rasterio: %s', tiff_path)
+        logger.info('Opening with rasterio: %s', ctx.tiff_filepath)
 
-        with rasterio.open(tiff_path) as src:
+        with rasterio.open(ctx.tiff_filepath) as src:
             logger.info('rasterio src: %dx%d bands=%d dtype=%s crs=%s nodata=%s',
                         src.width, src.height, src.count, src.dtypes[0],
                         src.crs, src.nodata)
@@ -410,7 +422,7 @@ class ServiceRunner(dl.BaseServiceRunner):
             full_shape = (src.count, src.height, src.width)
             # Use user-specified band indices (1-indexed), falling back to
             # the first min(count, 3) bands when the input is empty/invalid.
-            indexes = [int(b) for b in self.vis_bands if 1 <= int(b) <= src.count]
+            indexes = [int(b) for b in ctx.vis_bands if 1 <= int(b) <= src.count]
             if not indexes:
                 indexes = list(range(1, min(src.count, 3) + 1))
             num_vis_bands = len(indexes)
@@ -418,10 +430,10 @@ class ServiceRunner(dl.BaseServiceRunner):
             is_float = np.issubdtype(np.dtype(src.dtypes[0]), np.floating)
 
             meta = self._build_base_meta(src)
-            meta = self._enrich_geo_metadata(src, meta, tiff_path)
+            meta = self._enrich_geo_metadata(src, meta, ctx.tiff_filepath)
 
             dmin, dmax = self._scan_global_minmax(src, indexes, is_float,
-                                                  self.normalization_percentile)
+                                                  ctx.normalization_percentile)
             output = self._normalize_windowed(src, indexes, is_float, dmin, dmax, num_vis_bands)
 
         result_image = self._array_to_image(output)
@@ -554,9 +566,9 @@ class ServiceRunner(dl.BaseServiceRunner):
         logger.info('Built PIL image: size=%s (WxH) mode=%s', image.size, image.mode)
         return image
 
-    def _convert_onebit(self, pil_image: Image.Image) -> tuple[Image.Image, tuple, dict]:
+    def _convert_onebit(self, ctx: TiffProcessingContext) -> tuple[Image.Image, tuple, dict]:
         """Convert a 1-bit TIFF to RGBA using PIL only (no geoio needed)."""
-        converted = pil_image.convert('RGBA')
+        converted = ctx.pil_image.convert('RGBA')
         # Shape as (channels, height, width) to match geoio convention
         shape = (1, converted.size[1], converted.size[0])
         return converted, shape, {}
@@ -679,9 +691,9 @@ class ServiceRunner(dl.BaseServiceRunner):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _cleanup_files(*filepaths):
+    def _cleanup_files(ctx: 'TiffProcessingContext'):
         """Remove temporary files, logging warnings on failure."""
-        for fp in filepaths:
+        for fp in [ctx.tiff_filepath]:
             if fp and os.path.isfile(fp):
                 try:
                     os.remove(fp)
@@ -776,43 +788,47 @@ class ServiceRunner(dl.BaseServiceRunner):
         return None
 
     @staticmethod
-    def validate_dimensions(item: dl.Item, width, height, channels) -> dict:
-        """Validate extracted dimensions, clamp to INT32_MAX, and return dims dict."""
-        if width is None or width <= 0:
-            record_etl_error(item, 'dimensions', 'Invalid width: {}'.format(width))
-        if height is None or height <= 0:
-            record_etl_error(item, 'dimensions', 'Invalid height: {}'.format(height))
-        if channels is None or channels <= 0:
-            record_etl_error(item, 'dimensions', 'Invalid channels: {}'.format(channels))
+    def validate_dimensions(ctx: 'TiffProcessingContext') -> None:
+        """Validate extracted dimensions, clamp to INT32_MAX, and store in ``ctx.dims``."""
+        width = ctx.shape[-1]
+        height = ctx.shape[-2]
+        channels = ctx.shape[-3] if len(ctx.shape) == 3 else 1
 
-        dims = {
+        if width is None or width <= 0:
+            record_etl_error(ctx.item, 'dimensions', 'Invalid width: {}'.format(width))
+        if height is None or height <= 0:
+            record_etl_error(ctx.item, 'dimensions', 'Invalid height: {}'.format(height))
+        if channels is None or channels <= 0:
+            record_etl_error(ctx.item, 'dimensions', 'Invalid channels: {}'.format(channels))
+
+        ctx.dims = {
             'width': ServiceRunner.clamp_int32(width) if width and width > 0 else None,
             'height': ServiceRunner.clamp_int32(height) if height and height > 0 else None,
             'channels': ServiceRunner.clamp_int32(channels) if channels and channels > 0 else None,
         }
-        return dims
 
     # ------------------------------------------------------------------
     # Thumbnail generation
     # ------------------------------------------------------------------
 
-    def generate_thumbnail(self, item: dl.Item, png_image: Image.Image, thumbnail_size: int) -> None:
+    def generate_thumbnail(self, ctx: TiffProcessingContext) -> None:
         """Generate and upload a thumbnail from the in-memory converted PNG.
 
-        Uses the PNG image and uploads the resized image directly from a BytesIO buffer.
-        Mutates ``item.metadata`` in place when successful.
+        Uses ``ctx.png_image`` and ``ctx.thumbnail_size`` to build the
+        thumbnail, then uploads it directly from a BytesIO buffer.
+        Mutates ``ctx.item.metadata`` in place when successful.
         Caller is expected to wrap this in a try/except for non-fatal handling.
         """
-        buf = self.make_thumbnail_buffer(png_image, thumbnail_size)
-        thumbnail_item = item.dataset.items.upload(
+        buf = self.make_thumbnail_buffer(ctx.png_image, ctx.thumbnail_size)
+        thumbnail_item = ctx.item.dataset.items.upload(
             local_path=buf,
             remote_path='/.dataloop/thumbnails',
-            remote_name='{}.png'.format(item.id),
+            remote_name='{}.png'.format(ctx.item.id),
             overwrite=True,
-            item_metadata={'system': {'originItemId': item.id}},
+            item_metadata={'system': {'originItemId': ctx.item.id}},
         )
-        item.metadata.setdefault('system', {})['thumbnailId'] = thumbnail_item.id
-        logger.info('Thumbnail uploaded: item=%s thumb_id=%s', item.id, thumbnail_item.id)
+        ctx.item.metadata.setdefault('system', {})['thumbnailId'] = thumbnail_item.id
+        logger.info('Thumbnail uploaded: item=%s thumb_id=%s', ctx.item.id, thumbnail_item.id)
 
     # ------------------------------------------------------------------
     # Delete handler
