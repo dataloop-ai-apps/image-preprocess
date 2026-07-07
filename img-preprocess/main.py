@@ -34,7 +34,7 @@ class ServiceRunner(dl.BaseServiceRunner):
         self,
         item: dl.Item,
         extract_metadata: bool = True,
-        extract_thumbnail: bool = True,
+        extract_thumbnail: bool = False,
         thumbnail_size: int = DEFAULT_THUMB_SIZE,
         max_file_size_mb: int = MAX_FILE_SIZE_MB,
         extract_exif: bool = True,
