@@ -201,15 +201,15 @@
                 "namespace": "services.image-preprocess",
                 "type": "Event",
                 "scope": "system",
-                "active": false,
+                "active": true,
                 "template": true,
                 "activation": {
                     "autoClone": true,
                     "cloneActiveDefault": true,
-                    "overridable": false
+                    "overridable": true
                 },
                 "applyOnExistingProjects": true,
-                "activateOnExistingProjects": false,
+                "activateOnExistingProjects": true,
                 "spec": {
                     "resource": "Item",
                     "actions": ["Created", "Clone"],
@@ -229,7 +229,7 @@
                     },
                     "input": {
                         "extract_metadata": true,
-                        "extract_thumbnail": false,
+                        "extract_thumbnail": true,
                         "thumbnail_size": 128,
                         "max_file_size_mb": 100,
                         "extract_exif": true,
@@ -242,15 +242,15 @@
                 "namespace": "services.image-preprocess",
                 "type": "Event",
                 "scope": "system",
-                "active": false,
+                "active": true,
                 "template": true,
                 "activation": {
                     "autoClone": true,
                     "cloneActiveDefault": true,
-                    "overridable": false
+                    "overridable": true
                 },
                 "applyOnExistingProjects": true,
-                "activateOnExistingProjects": false,
+                "activateOnExistingProjects": true,
                 "spec": {
                     "resource": "Item",
                     "actions": ["Deleted"],
@@ -275,15 +275,15 @@
                 "namespace": "services.tiff-converter",
                 "type": "Event",
                 "scope": "system",
-                "active": false,
+                "active": true,
                 "template": true,
                 "activation": {
                     "autoClone": true,
                     "cloneActiveDefault": true,
-                    "overridable": false
+                    "overridable": true
                 },
                 "applyOnExistingProjects": true,
-                "activateOnExistingProjects": false,
+                "activateOnExistingProjects": true,
                 "spec": {
                     "resource": "Item",
                     "actions": ["Created"],
@@ -317,16 +317,16 @@
                 "name": "tiff-converter-deleted",
                 "namespace": "services.tiff-converter",
                 "type": "Event",
-                "active": false,
+                "active": true,
                 "scope": "system",
                 "template": true,
                 "activation": {
                     "autoClone": true,
                     "cloneActiveDefault": true,
-                    "overridable": false
+                    "overridable": true
                 },
                 "applyOnExistingProjects": true,
-                "activateOnExistingProjects": false,
+                "activateOnExistingProjects": true,
                 "spec": {
                     "resource": "Item",
                     "actions": ["Deleted"],
