@@ -1,8 +1,8 @@
 {
     "name": "image-preprocess-app",
-    "displayName": "Image Preprocess App",
+    "displayName": "Image Preprocess",
     "description": "Image Preprocess Application",
-    "version": "2.1.7",
+    "version": "2.1.12",
     "scope": "public",
     "attributes": {
         "Category": "Application",
@@ -17,7 +17,7 @@
     "codebase": {
         "type": "git",
         "gitUrl": "https://github.com/dataloop-ai-apps/image-preprocess.git",
-        "gitTag": "2.1.7"
+        "gitTag": "2.1.12"
     },
     "components": {
         "modules": [
@@ -161,7 +161,7 @@
                 "podType": "regular-s",
                 "runtime": {
                     "runnerImage": "gcr.io/viewo-g/piper/agent/runner/apps/image-preprocess:0.0.1",
-                    "concurrency": 2,
+                    "concurrency": 10,
                     "autoscaler": {
                         "type": "rabbitmq",
                         "minReplicas": 1,
@@ -180,7 +180,7 @@
                 "podType": "regular-m",
                 "runtime": {
                     "runnerImage": "gcr.io/viewo-g/piper/agent/runner/apps/image-preprocess:0.0.1",
-                    "concurrency": 1,
+                    "concurrency": 10,
                     "autoscaler": {
                         "type": "rabbitmq",
                         "minReplicas": 0,
@@ -201,15 +201,15 @@
                 "namespace": "services.image-preprocess",
                 "type": "Event",
                 "scope": "system",
-                "active": true,
+                "active": false,
                 "template": true,
                 "activation": {
                     "autoClone": true,
                     "cloneActiveDefault": true,
-                    "overridable": true
+                    "overridable": false
                 },
                 "applyOnExistingProjects": true,
-                "activateOnExistingProjects": true,
+                "activateOnExistingProjects": false,
                 "spec": {
                     "resource": "Item",
                     "actions": ["Created", "Clone"],
