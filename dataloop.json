@@ -1,6 +1,6 @@
 {
     "name": "image-preprocess-app",
-    "displayName": "Image Preprocess App",
+    "displayName": "Image Preprocess",
     "description": "Image Preprocess Application",
     "version": "2.1.11",
     "scope": "public",
