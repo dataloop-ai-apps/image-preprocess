@@ -102,7 +102,6 @@ class ServiceRunner(dl.BaseServiceRunner):
             with buffer, img:
                 if extract_metadata:
                     report_progress(progress, message="Extracting metadata", percent=45)
-                    item.metadata["system"]["size"] = buffer.getbuffer().nbytes
                     self.set_image_dimensions(item, img)
                     try:
                         self.extract_exif(img, item,
