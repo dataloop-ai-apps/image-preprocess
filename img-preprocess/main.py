@@ -11,7 +11,7 @@ if _REPO_ROOT not in sys.path:
 
 import dtlpy as dl
 from PIL import Image, ImageOps
-from PIL.ExifTags import Base, GPS, IFD
+from PIL.ExifTags import Base, GPS, IFD, TAGS
 
 from common.etl_errors import record_etl_error, active_logger, report_progress
 
@@ -59,7 +59,8 @@ class ServiceRunner(dl.BaseServiceRunner):
         default_thumb_size = int(thumbnail_size)
         log.info(
             f"Config: extract_metadata={extract_metadata} extract_thumbnail={extract_thumbnail} "
-            f"exif_enabled={exif_enabled} gps_enabled={gps_enabled}"
+            f"exif_enabled={exif_enabled} gps_enabled={gps_enabled} "
+            f"thumbnail_size={default_thumb_size}"
         )
 
         if not extract_metadata and not extract_thumbnail:
@@ -76,6 +77,18 @@ class ServiceRunner(dl.BaseServiceRunner):
             mimetype = item.metadata.get("system", {}).get("mimetype", "")
             if not mimetype.startswith("image/"):
                 msg = f"Unsupported mimetype: {mimetype}"
+                log.error(msg)
+                record_etl_error(item, stage="validation", error=msg, failed=True)
+                raise ValueError(msg)
+
+            # Reject files over the configured size limit before downloading
+            size_bytes = item.metadata.get("system", {}).get("size")
+            max_file_size_bytes = max_file_size_mb * 1024 * 1024
+            if size_bytes is not None and size_bytes > max_file_size_bytes:
+                msg = (
+                    f"Item size {size_bytes} bytes exceeds max_file_size_mb="
+                    f"{max_file_size_mb}"
+                )
                 log.error(msg)
                 record_etl_error(item, stage="validation", error=msg, failed=True)
                 raise ValueError(msg)
@@ -129,6 +142,10 @@ class ServiceRunner(dl.BaseServiceRunner):
     # Metadata extraction
     # ------------------------------------------------------------------
 
+    # Sub-IFD pointer tags: their values are offsets/handled separately
+    # (Exif/GPSInfo sub-IFDs, MakerNote binary blob), never real metadata.
+    _EXIF_POINTER_TAGS = {IFD.Exif, IFD.GPSInfo, IFD.Makernote, IFD.Interop}
+
     @staticmethod
     def _ratio(val):
         if hasattr(val, "denominator"):
@@ -152,6 +169,30 @@ class ServiceRunner(dl.BaseServiceRunner):
         return str(ServiceRunner._ratio(val))
 
     @staticmethod
+    def _serialize_exif_value(val):
+        """Best-effort conversion of a raw EXIF value into a JSON-serializable form.
+
+        Returns None for values that aren't meaningfully representable
+        (e.g. binary blobs like MakerNote), so callers can drop them.
+        """
+        if hasattr(val, "denominator"):
+            if val.denominator == 1:
+                return int(val.numerator)
+            return round(ServiceRunner._ratio(val), 6)
+        if isinstance(val, bytes):
+            try:
+                decoded = val.decode("ascii").strip("\x00").strip()
+            except UnicodeDecodeError:
+                return None
+            return decoded if decoded.isprintable() and decoded else None
+        if isinstance(val, (tuple, list)):
+            items = [ServiceRunner._serialize_exif_value(v) for v in val]
+            return items if all(v is not None for v in items) else None
+        if isinstance(val, str):
+            return val.strip().strip("\x00")
+        return val
+
+    @staticmethod
     def set_image_dimensions(item, img: Image.Image):
         """Write image width, height, and channel count to item.metadata.system."""
         width, height = img.size
@@ -161,42 +202,17 @@ class ServiceRunner(dl.BaseServiceRunner):
         item.metadata["system"]["channels"] = channels
 
     @staticmethod
-    def map_exif_keys(exif_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Map snake_case EXIF keys to camelCase for item.metadata.system.exif."""
-        key_mapping = {
-            "orientation": "orientation",
-            "camera_make": "cameraMake",
-            "camera_model": "cameraModel",
-            "date_time": "dateTime",
-            "iso": "iso",
-            "aperture": "aperture",
-            "exposure_time": "exposureTime",
-            "focal_length": "focalLength",
-            "focal_length_35mm": "focalLength35mm",
-            "lens_model": "lensModel",
-            "flash": "flash",
-            "white_balance": "whiteBalance",
-        }
-        
-        mapped = {}
-        for snake_key, value in exif_data.items():
-            if snake_key in key_mapping:
-                mapped[key_mapping[snake_key]] = value
-        
-        return mapped
-
-    @staticmethod
     def build_location(gps_data: Dict[str, float]) -> Dict[str, float]:
         """Build location dict from GPS coordinates for item.metadata."""
         location = {
             "latitude": gps_data["latitude"],
             "longitude": gps_data["longitude"],
         }
-        
+
         # Altitude is optional
         if "altitude" in gps_data:
             location["altitude"] = gps_data["altitude"]
-        
+
         return location
 
     def extract_exif(self, img: Image.Image, item, exif=True, gps=True):
@@ -204,7 +220,9 @@ class ServiceRunner(dl.BaseServiceRunner):
 
         Set *exif* or *gps* to ``False`` to skip the corresponding
         extraction entirely.
-        Sets camelCase keys on item.metadata["system"]["exif"].
+        All present EXIF tags are extracted under their standard EXIF names.
+        A small hard-coded set of well-known tags are converted to
+        human-friendly values (rounded rationals, cleaned strings, etc.).
         Does nothing if no EXIF data exists.
         Caller is expected to wrap this in a try/except for non-fatal handling.
         """
@@ -215,38 +233,43 @@ class ServiceRunner(dl.BaseServiceRunner):
         if exif:
             exif_ifd = raw_exif.get_ifd(IFD.Exif)
 
-            # (result_key, source, exif_tag, transform)
-            fields = [
-                ("orientation",       raw_exif, Base.Orientation,         int),
-                ("camera_make",       raw_exif, Base.Make,                self._clean_str),
-                ("camera_model",      raw_exif, Base.Model,               self._clean_str),
-                ("date_time",         exif_ifd, Base.DateTimeOriginal,    self._clean_str),
-                ("iso",               exif_ifd, Base.ISOSpeedRatings,     self._iso),
-                ("aperture",          exif_ifd, Base.FNumber,             lambda v: round(self._ratio(v), 2)),
-                ("exposure_time",     exif_ifd, Base.ExposureTime,        self._exposure),
-                ("focal_length",      exif_ifd, Base.FocalLength,         lambda v: round(self._ratio(v), 3)),
-                ("focal_length_35mm", exif_ifd, Base.FocalLengthIn35mmFilm, int),
-                ("lens_model",        exif_ifd, Base.LensModel,           self._clean_str),
-                ("flash",             exif_ifd, Base.Flash,               lambda v: bool(int(v) & 1)),
-                ("white_balance",     exif_ifd, Base.WhiteBalance,        int),
-            ]
+            # Per-tag transforms. Built inside the method so ``self._ratio``
+            # and friends resolve at call time, not class-body time.
+            transforms = {
+                "Make":                  self._clean_str,
+                "Model":                 self._clean_str,
+                "LensModel":             self._clean_str,
+                "DateTimeOriginal":      self._clean_str,
+                "OffsetTime":            self._clean_str,
+                "OffsetTimeOriginal":    self._clean_str,
+                "OffsetTimeDigitized":   self._clean_str,
+                "ISOSpeedRatings":       self._iso,
+                "FNumber":               lambda v: round(self._ratio(v), 2),
+                "ExposureTime":          self._exposure,
+                "FocalLength":           lambda v: round(self._ratio(v), 3),
+                "FocalLengthIn35mmFilm": int,
+                "Flash":                 lambda v: bool(int(v) & 1),
+            }
 
-            # DateTimeOriginal may live in main IFD on some files
-            result = {}
-            if raw_exif.get(Base.DateTimeOriginal) is not None and exif_ifd.get(Base.DateTimeOriginal) is None:
-                exif_ifd[Base.DateTimeOriginal] = raw_exif.get(Base.DateTimeOriginal)
+            exif_data = {}
+            for source in (raw_exif, exif_ifd):
+                for tag_id, raw in source.items():
+                    if tag_id in self._EXIF_POINTER_TAGS:
+                        continue
+                    name = TAGS.get(tag_id, str(tag_id))
+                    if name in exif_data:
+                        continue
+                    transform = transforms.get(name, self._serialize_exif_value)
+                    try:
+                        value = transform(raw)
+                    except Exception as e:
+                        logger.warning(f"Failed to extract {name}: {e}")
+                        continue
+                    if value is not None:
+                        exif_data[name] = value
 
-            for key, source, tag, transform in fields:
-                raw = source.get(tag)
-                if raw is None:
-                    continue
-                try:
-                    result[key] = transform(raw)
-                except Exception as e:
-                    logger.warning(f"Failed to extract {key}: {e}")
-            
-            if result:
-                item.metadata.setdefault("system", {})["exif"] = self.map_exif_keys(result)
+            if exif_data:
+                item.metadata.setdefault("system", {})["exif"] = exif_data
 
         if gps:
             self.extract_gps(raw_exif, item)
@@ -297,7 +320,7 @@ class ServiceRunner(dl.BaseServiceRunner):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def auto_rotate(img: Image.Image, item) -> Image.Image:
+    def auto_rotate(img: Image.Image) -> Image.Image:
         """Apply EXIF orientation and return a new correctly-oriented image.
         If no orientation tag, returns the image unchanged.
         Caller is expected to wrap this in a try/except for non-fatal handling.
@@ -329,31 +352,17 @@ class ServiceRunner(dl.BaseServiceRunner):
         # Resize using thumbnail (never upscales, preserves aspect ratio)
         thumb.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
         
-        # Mode conversion before save
-        if thumb.mode == "RGBA":
-            # Composite over white background
-            background = Image.new("RGB", thumb.size, (255, 255, 255))
-            background.paste(thumb, mask=thumb.split()[3])
-            thumb = background
-        elif thumb.mode == "P":
-            # Convert to RGBA first (may have transparency), then composite over white
+        # Mode conversion before save. "P" may carry transparency, so promote
+        # it to RGBA first; RGBA/LA are then composited over a white
+        # background using their alpha band as the mask. "L" is valid PNG
+        # as-is; anything else not already RGB is converted directly.
+        if thumb.mode == "P":
             thumb = thumb.convert("RGBA")
+        if thumb.mode in ("RGBA", "LA"):
             background = Image.new("RGB", thumb.size, (255, 255, 255))
-            background.paste(thumb, mask=thumb.split()[3])
+            background.paste(thumb, mask=thumb.split()[-1])
             thumb = background
-        elif thumb.mode == "LA":
-            # Composite over white background
-            background = Image.new("RGB", thumb.size, (255, 255, 255))
-            background.paste(thumb, mask=thumb.split()[1])
-            thumb = background
-        elif thumb.mode == "CMYK":
-            # Direct convert to RGB
-            thumb = thumb.convert("RGB")
-        elif thumb.mode == "L":
-            # Keep as L (valid in PNG)
-            pass
-        elif thumb.mode != "RGB":
-            # Convert any other mode to RGB
+        elif thumb.mode not in ("RGB", "L"):
             thumb = thumb.convert("RGB")
         
         # Save to BytesIO as PNG
@@ -370,7 +379,7 @@ class ServiceRunner(dl.BaseServiceRunner):
         Sets item.metadata["system"]["thumbnailId"] but does NOT call item.update().
         Non-fatal errors are recorded via ``record_etl_error``.
         """
-        rotated = self.auto_rotate(img, item)
+        rotated = self.auto_rotate(img)
         thumb_buf = self.generate_thumbnail(rotated, max_edge)
         thumbnail_item = item.dataset.items.upload(
             local_path=thumb_buf,

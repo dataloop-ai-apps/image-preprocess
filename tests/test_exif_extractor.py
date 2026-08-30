@@ -73,18 +73,18 @@ def test_full_exif_extraction():
     extract_exif(img, item)
     
     exif = item.metadata["system"]["exif"]
-    assert exif["orientation"] == 1
-    assert exif["cameraMake"] == "Apple"
-    assert exif["cameraModel"] == "iPhone 15 Pro"
-    assert exif["dateTime"] == "2024:01:15 10:30:45"
-    assert exif["iso"] == 100
-    assert exif["aperture"] == 1.8
-    assert exif["exposureTime"] == "1/120"
-    assert exif["focalLength"] == 6.765
-    assert exif["focalLength35mm"] == 24
-    assert exif["lensModel"] == "iPhone 15 Pro back camera 6.765mm f/1.78"
-    assert exif["flash"] is False
-    assert exif["whiteBalance"] == 0
+    assert exif["Orientation"] == 1
+    assert exif["Make"] == "Apple"
+    assert exif["Model"] == "iPhone 15 Pro"
+    assert exif["DateTimeOriginal"] == "2024:01:15 10:30:45"
+    assert exif["ISO"] == 100
+    assert exif["FNumber"] == 1.8
+    assert exif["ExposureTime"] == "1/120"
+    assert exif["FocalLength"] == 6.765
+    assert exif["FocalLengthIn35mmFilm"] == 24
+    assert exif["LensModel"] == "iPhone 15 Pro back camera 6.765mm f/1.78"
+    assert exif["Flash"] is False
+    assert exif["WhiteBalance"] == 0
 
 
 def test_no_exif():
@@ -109,9 +109,53 @@ def test_partial_exif():
     extract_exif(img, item)
     
     exif = item.metadata["system"]["exif"]
-    assert exif["orientation"] == 1
-    assert "cameraMake" not in exif
-    assert "iso" not in exif
+    assert exif["Orientation"] == 1
+    assert "Make" not in exif
+    assert "ISO" not in exif
+
+
+def test_uncurated_fields_are_included():
+    """Fields outside the curated list are still extracted, under their standard name."""
+    exif_tags = {Base.Orientation: 1, Base.Software: "17.6.1"}
+    exif_ifd = {Base.LensMake: "Apple", Base.MeteringMode: 5}
+
+    img = Image.new("RGB", (800, 600))
+    exif_obj = img.getexif()
+    for tag, value in exif_tags.items():
+        exif_obj[tag] = value
+    exif_obj[IFD.Exif] = exif_ifd
+
+    buf = BytesIO()
+    img.save(buf, format="JPEG", exif=exif_obj.tobytes())
+    buf.seek(0)
+
+    img = Image.open(buf)
+    item = _make_item()
+    extract_exif(img, item)
+
+    exif = item.metadata["system"]["exif"]
+    assert exif["Software"] == "17.6.1"
+    assert exif["LensMake"] == "Apple"
+    assert exif["MeteringMode"] == 5
+
+
+def test_maker_note_binary_blob_dropped():
+    """MakerNote-style binary blobs aren't representable and are dropped, not crashed on."""
+    exif_ifd = {Base.MakerNote: b"\x00\x01\xffApple iOS\x00\x00\x92\xb2"}
+    img = Image.new("RGB", (800, 600))
+    exif_obj = img.getexif()
+    exif_obj[IFD.Exif] = exif_ifd
+
+    buf = BytesIO()
+    img.save(buf, format="JPEG", exif=exif_obj.tobytes())
+    buf.seek(0)
+
+    img = Image.open(buf)
+    item = _make_item()
+    extract_exif(img, item)
+
+    exif = item.metadata["system"].get("exif", {})
+    assert "MakerNote" not in exif
 
 
 def test_gps_northern_eastern():
@@ -237,7 +281,7 @@ def test_flash_fired():
     item = _make_item()
     extract_exif(img, item)
     
-    assert item.metadata["system"]["exif"]["flash"] is True
+    assert item.metadata["system"]["exif"]["Flash"] is True
 
 
 def test_flash_not_fired():
@@ -255,7 +299,7 @@ def test_flash_not_fired():
     item = _make_item()
     extract_exif(img, item)
     
-    assert item.metadata["system"]["exif"]["flash"] is False
+    assert item.metadata["system"]["exif"]["Flash"] is False
 
 
 def test_flash_with_red_eye():
@@ -273,7 +317,7 @@ def test_flash_with_red_eye():
     item = _make_item()
     extract_exif(img, item)
     
-    assert item.metadata["system"]["exif"]["flash"] is True
+    assert item.metadata["system"]["exif"]["Flash"] is True
 
 
 def test_exposure_time_formatting():
@@ -291,7 +335,7 @@ def test_exposure_time_formatting():
     item = _make_item()
     extract_exif(img, item)
     
-    assert item.metadata["system"]["exif"]["exposureTime"] == "1/120"
+    assert item.metadata["system"]["exif"]["ExposureTime"] == "1/120"
 
 
 def test_exposure_time_ge_1_second():
@@ -309,7 +353,7 @@ def test_exposure_time_ge_1_second():
     item = _make_item()
     extract_exif(img, item)
     
-    assert item.metadata["system"]["exif"]["exposureTime"] == "5/2"
+    assert item.metadata["system"]["exif"]["ExposureTime"] == "5/2"
 
 
 def test_white_balance_auto():
@@ -327,7 +371,7 @@ def test_white_balance_auto():
     item = _make_item()
     extract_exif(img, item)
     
-    assert item.metadata["system"]["exif"]["whiteBalance"] == 0
+    assert item.metadata["system"]["exif"]["WhiteBalance"] == 0
 
 
 def test_white_balance_manual():
@@ -345,7 +389,7 @@ def test_white_balance_manual():
     item = _make_item()
     extract_exif(img, item)
     
-    assert item.metadata["system"]["exif"]["whiteBalance"] == 1
+    assert item.metadata["system"]["exif"]["WhiteBalance"] == 1
 
 
 def test_null_bytes_in_string():
@@ -356,7 +400,7 @@ def test_null_bytes_in_string():
     item = _make_item()
     extract_exif(img, item)
     
-    assert item.metadata["system"]["exif"]["cameraMake"] == "Apple"
+    assert item.metadata["system"]["exif"]["Make"] == "Apple"
 
 
 def test_corrupt_exif_partial():
@@ -373,5 +417,5 @@ def test_corrupt_exif_partial():
     extract_exif(img, item)
     
     exif = item.metadata["system"]["exif"]
-    assert exif["orientation"] == 1
-    assert exif["cameraMake"] == "Apple"
+    assert exif["Orientation"] == 1
+    assert exif["Make"] == "Apple"
