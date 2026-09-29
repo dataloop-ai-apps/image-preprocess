@@ -160,7 +160,7 @@
                 "moduleName": "img_module",
                 "podType": "regular-s",
                 "runtime": {
-                    "runnerImage": "hub.dataloop.ai/dtlpy-runner-images/cpu:python3.13_full_bci_latest",
+                    "runnerImage": "hub.dataloop.ai/dtlpy-runner-images/cpu:python3.13_full_bci",
                     "concurrency": 10,
                     "autoscaler": {
                         "type": "rabbitmq",
@@ -179,7 +179,7 @@
                 "moduleName": "tiff_module",
                 "podType": "regular-m",
                 "runtime": {
-                    "runnerImage": "hub.dataloop.ai/dtlpy-runner-images/cpu:python3.13_full_bci_latest",
+                    "runnerImage": "hub.dataloop.ai/dtlpy-runner-images/cpu:python3.13_full_bci",
                     "concurrency": 10,
                     "autoscaler": {
                         "type": "rabbitmq",
