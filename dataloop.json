@@ -179,7 +179,7 @@
                 "moduleName": "tiff_module",
                 "podType": "regular-m",
                 "runtime": {
-                    "runnerImage": "hub.dataloop.ai/dtlpy-runner-images/cpu:python3.13_full_bci",
+                    "runnerImage": "hub.dataloop.ai/customerhub/piper/agent/runner/cpu/base:python3.13_full_bci",
                     "concurrency": 10,
                     "autoscaler": {
                         "type": "rabbitmq",
